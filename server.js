@@ -1,123 +1,284 @@
 /**
- * Puter AI API Server
- * Client-side authentication with full API endpoints
- * Works on Render and locally
+ * Puter AI API Server with Server-Side Authentication
+ * Uses Puppeteer to maintain a browser session on the server
+ * Login once via web interface, then API works for everyone
  */
 
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const puppeteer = require('puppeteer');
+const fs = require('fs');
 const chatStore = require('./chat-store');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.API_KEY || null;
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://unlimitaiputer.onrender.com';
+
+// Keep-alive ping every 90 seconds to prevent Render from sleeping
+const PING_INTERVAL = 90 * 1000; // 90 seconds
+function startKeepAlive() {
+    setInterval(async () => {
+        try {
+            const url = RENDER_URL + '/api/health';
+            const https = require('https');
+            const http = require('http');
+            const client = url.startsWith('https') ? https : http;
+
+            client.get(url, (res) => {
+                console.log(`[KeepAlive] Ping ${url} - Status: ${res.statusCode}`);
+            }).on('error', (e) => {
+                console.log(`[KeepAlive] Ping failed: ${e.message}`);
+            });
+        } catch (e) {
+            console.log('[KeepAlive] Error:', e.message);
+        }
+    }, PING_INTERVAL);
+    console.log(`[KeepAlive] Started - pinging ${RENDER_URL} every ${PING_INTERVAL / 1000}s`);
+}
 
 // Middleware
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Api-Key', 'Authorization']
-}));
+app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// API Key check (optional)
-function checkApiKey(req, res, next) {
-    if (!API_KEY) return next();
-    const key = req.headers['x-api-key'] || req.query.api_key;
-    if (key !== API_KEY) {
-        return res.status(401).json({ error: 'Invalid API key' });
-    }
-    next();
+// Global browser state
+let browser = null;
+let page = null;
+let isReady = false;
+let isLoggedIn = false;
+
+// =====================
+// Browser Management
+// =====================
+
+async function initBrowser() {
+    console.log('[Browser] Launching...');
+
+    browser = await puppeteer.launch({
+        headless: 'new',
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--single-process'
+        ]
+    });
+
+    page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+
+    // Load the puter client page
+    const clientHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <script src="https://js.puter.com/v2/"></script>
+    </head>
+    <body>
+        <div id="status">Loading Puter.js...</div>
+        <script>
+            window.puterReady = false;
+            window.isLoggedIn = false;
+
+            // Wait for puter
+            function checkPuter() {
+                if (typeof puter !== 'undefined' && puter.ai) {
+                    window.puterReady = true;
+                    window.isLoggedIn = puter.auth.isSignedIn();
+                    document.getElementById('status').textContent = 
+                        window.isLoggedIn ? 'Logged in!' : 'Not logged in';
+                } else {
+                    setTimeout(checkPuter, 100);
+                }
+            }
+            checkPuter();
+
+            // Chat function
+            window.doChat = async function(prompt, options) {
+                if (!window.isLoggedIn) throw new Error('Not logged in');
+                const result = await puter.ai.chat(prompt, options);
+                if (typeof result === 'string') return { text: result };
+                if (result.message?.content) {
+                    if (Array.isArray(result.message.content)) {
+                        return { text: result.message.content.map(c => c.text || '').join('') };
+                    }
+                    return { text: result.message.content };
+                }
+                if (result.text) return { text: result.text };
+                return { text: JSON.stringify(result) };
+            };
+
+            // Image generation
+            window.doImageGen = async function(prompt, options) {
+                if (!window.isLoggedIn) throw new Error('Not logged in');
+                const img = await puter.ai.txt2img(prompt, options);
+                return { src: img.src };
+            };
+
+            // Sign in
+            window.doSignIn = function() {
+                return puter.auth.signIn();
+            };
+
+            // Check login
+            window.checkLogin = function() {
+                window.isLoggedIn = puter.auth.isSignedIn();
+                return window.isLoggedIn;
+            };
+        </script>
+    </body>
+    </html>`;
+
+    await page.setContent(clientHtml);
+
+    // Wait for Puter to load
+    console.log('[Browser] Waiting for Puter.js...');
+    await page.waitForFunction(() => window.puterReady === true, { timeout: 30000 });
+
+    isReady = true;
+    isLoggedIn = await page.evaluate(() => window.isLoggedIn);
+    console.log(`[Browser] Ready! Logged in: ${isLoggedIn}`);
 }
 
 // =====================
-// Health & Info
+// API Endpoints
 // =====================
 
+// Health check
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
-        timestamp: new Date().toISOString(),
-        models: {
-            text: ['claude-opus-4-5', 'gemini-3-pro-preview', 'deepseek-v3.2-speciale'],
-            image: ['black-forest-labs/FLUX.1-pro', 'dall-e-3', 'gpt-image-1']
-        }
+        browserReady: isReady,
+        loggedIn: isLoggedIn
     });
 });
 
-app.get('/api/info', (req, res) => {
-    res.json({
-        name: 'Puter AI API',
-        version: '2.0.0',
-        description: 'Free AI API powered by Puter.js',
-        authMethod: 'Browser-based OAuth via Puter',
-        howToUse: 'Open the main page in browser, sign in with Puter, then use the API',
-        endpoints: {
-            '/': 'Web UI with login and API testing',
-            '/api/health': 'Health check',
-            '/api/info': 'API information',
-            '/api/chats': 'Chat management (CRUD)',
-            '/api/chats/:id': 'Get/Delete specific chat',
-            '/api/chats/:id/messages': 'Add message to chat'
-        }
-    });
+// Get login status
+app.get('/api/auth/status', (req, res) => {
+    res.json({ loggedIn: isLoggedIn, ready: isReady });
 });
 
-// =====================
-// Chat Management (works without Puter auth - stored locally)
-// =====================
+// Trigger login popup (returns URL to show in iframe)
+app.post('/api/auth/login', async (req, res) => {
+    if (!isReady) {
+        return res.status(503).json({ error: 'Browser not ready' });
+    }
 
-app.get('/api/chats', checkApiKey, (req, res) => {
     try {
-        res.json(chatStore.getAllChats());
+        // Trigger sign in and wait for popup
+        const popupPromise = new Promise(resolve => {
+            browser.once('targetcreated', async target => {
+                if (target.type() === 'page') {
+                    const popup = await target.page();
+                    resolve(popup.url());
+                }
+            });
+            setTimeout(() => resolve(null), 5000);
+        });
+
+        await page.evaluate(() => window.doSignIn());
+        const popupUrl = await popupPromise;
+
+        res.json({
+            message: 'Login popup opened on server. Complete login in the iframe below.',
+            popupUrl: popupUrl || 'https://puter.com/action/sign-in'
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-app.post('/api/chats', checkApiKey, (req, res) => {
+// Check if login completed
+app.get('/api/auth/check', async (req, res) => {
+    if (!isReady) {
+        return res.status(503).json({ error: 'Browser not ready' });
+    }
+
     try {
-        const { title, model } = req.body;
-        const chat = chatStore.createChat(title, model);
-        res.status(201).json(chat);
+        isLoggedIn = await page.evaluate(() => window.checkLogin());
+        res.json({ loggedIn: isLoggedIn });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-app.get('/api/chats/:id', checkApiKey, (req, res) => {
+// Chat endpoint
+app.post('/api/chat', async (req, res) => {
+    if (!isReady) {
+        return res.status(503).json({ error: 'Browser not ready' });
+    }
+    if (!isLoggedIn) {
+        return res.status(401).json({ error: 'Not logged in. Use /api/auth/login first.' });
+    }
+
+    const { prompt, model = 'gemini-3-pro-preview', messages, stream = false, thinking = false } = req.body;
+
+    if (!prompt && !messages) {
+        return res.status(400).json({ error: 'prompt or messages required' });
+    }
+
     try {
-        const chat = chatStore.getChat(req.params.id);
-        if (!chat) return res.status(404).json({ error: 'Chat not found' });
-        res.json(chat);
+        const options = { model };
+        if (thinking) options.thinking = true;
+        if (stream) options.stream = true;
+
+        const input = messages || prompt;
+        const result = await page.evaluate(async (input, options) => {
+            return await window.doChat(input, options);
+        }, input, options);
+
+        res.json(result);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-app.delete('/api/chats/:id', checkApiKey, (req, res) => {
+// Image generation endpoint
+app.post('/api/image/generate', async (req, res) => {
+    if (!isReady) {
+        return res.status(503).json({ error: 'Browser not ready' });
+    }
+    if (!isLoggedIn) {
+        return res.status(401).json({ error: 'Not logged in' });
+    }
+
+    const { prompt, model = 'black-forest-labs/FLUX.1-pro', quality } = req.body;
+
+    if (!prompt) {
+        return res.status(400).json({ error: 'prompt required' });
+    }
+
     try {
-        const deleted = chatStore.deleteChat(req.params.id);
-        if (!deleted) return res.status(404).json({ error: 'Chat not found' });
-        res.json({ success: true });
+        const options = { model };
+        if (quality) options.quality = quality;
+
+        const result = await page.evaluate(async (prompt, options) => {
+            return await window.doImageGen(prompt, options);
+        }, prompt, options);
+
+        res.json(result);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-app.post('/api/chats/:id/messages', checkApiKey, (req, res) => {
-    try {
-        const { role, content } = req.body;
-        const chat = chatStore.getChat(req.params.id);
-        if (!chat) return res.status(404).json({ error: 'Chat not found' });
-
-        const message = chatStore.addMessage(req.params.id, role || 'user', content);
-        res.status(201).json(message);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
+// Chat management
+app.get('/api/chats', (req, res) => res.json(chatStore.getAllChats()));
+app.post('/api/chats', (req, res) => {
+    const { title, model } = req.body;
+    res.status(201).json(chatStore.createChat(title, model));
+});
+app.get('/api/chats/:id', (req, res) => {
+    const chat = chatStore.getChat(req.params.id);
+    if (!chat) return res.status(404).json({ error: 'Not found' });
+    res.json(chat);
+});
+app.delete('/api/chats/:id', (req, res) => {
+    const deleted = chatStore.deleteChat(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
 });
 
 // Default route
@@ -125,21 +286,40 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Start server
-app.listen(PORT, () => {
+// =====================
+// Startup
+// =====================
+
+async function start() {
     console.log('='.repeat(50));
-    console.log('🚀 Puter AI API Server v2.0');
+    console.log('🚀 Puter AI API Server');
     console.log('='.repeat(50));
-    console.log(`Server: http://localhost:${PORT}`);
-    console.log('');
-    console.log('Features:');
-    console.log('  ✅ Browser-based Puter authentication');
-    console.log('  ✅ Session persistence (localStorage)');
-    console.log('  ✅ Text chat (Gemini, Claude, DeepSeek)');
-    console.log('  ✅ Image generation (FLUX, DALL-E)');
-    console.log('  ✅ Image understanding (Vision)');
-    console.log('  ✅ Chat history management');
-    console.log('');
-    console.log('Open the URL in your browser to get started!');
-    console.log('='.repeat(50));
-});
+
+    // Start Express
+    app.listen(PORT, () => {
+        console.log(`Server: http://localhost:${PORT}`);
+    });
+
+    // Initialize browser
+    try {
+        await initBrowser();
+        console.log('');
+        console.log('Next steps:');
+        if (!isLoggedIn) {
+            console.log('  1. Open the URL in browser');
+            console.log('  2. Click "Login to Puter" button');
+            console.log('  3. Complete authentication');
+            console.log('  4. API will work for everyone!');
+        } else {
+            console.log('  ✅ Already logged in! API is ready.');
+        }
+        console.log('='.repeat(50));
+    } catch (e) {
+        console.error('[Browser] Failed to initialize:', e.message);
+    }
+
+    // Start keep-alive ping
+    startKeepAlive();
+}
+
+start();

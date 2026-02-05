@@ -1,15 +1,15 @@
 {
     "name": "puter-ai-api",
-    "version": "1.0.0",
-    "description": "Puter.js AI API Server",
+    "version": "2.0.0",
+    "description": "Puter.js AI API Server with server-side auth",
     "main": "server.js",
     "scripts": {
-        "start": "node server.js",
-        "dev": "node server.js"
+        "start": "node server.js"
     },
     "dependencies": {
         "cors": "^2.8.5",
         "express": "^4.18.2",
+        "puppeteer": "^21.0.0",
         "uuid": "^9.0.0"
     },
     "engines": {
