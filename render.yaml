@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: puter-ai-api
+    runtime: node
+    region: frankfurt
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Puter API Client</title>
+    <script src="https://js.puter.com/v2/"></script>
+</head>
+
+<body>
+    <div id="status">Initializing...</div>
+    <script>
+        // This page is loaded by Puppeteer to access Puter.js APIs
+        window.puterReady = false;
+        window.puterError = null;
+
+        // Wait for puter to be available
+        function waitForPuter() {
+            return new Promise((resolve, reject) => {
+                if (typeof puter !== 'undefined' && puter.ai) {
+                    resolve();
+                } else {
+                    setTimeout(() => waitForPuter().then(resolve).catch(reject), 100);
+                }
+            });
+        }
+
+        waitForPuter().then(() => {
+            window.puterReady = true;
+            document.getElementById('status').textContent = 'Puter Ready';
+        }).catch(err => {
+            window.puterError = err.message;
+            document.getElementById('status').textContent = 'Error: ' + err.message;
+        });
+
+        // Exposed functions for Puppeteer
+        window.puterChat = async function (prompt, options) {
+            console.log('[puterChat] Called with:', prompt, options);
+            if (!window.puterReady) throw new Error('Puter not ready');
+            try {
+                console.log('[puterChat] Calling puter.ai.chat...');
+                const response = await puter.ai.chat(prompt, options);
+                console.log('[puterChat] Got response:', response);
+                // Normalize response
+                if (typeof response === 'string') return { text: response };
+                if (response.message?.content) {
+                    if (Array.isArray(response.message.content)) {
+                        return { text: response.message.content.map(c => c.text || '').join('') };
+                    }
+                    return { text: response.message.content };
+                }
+                if (response.text) return { text: response.text };
+                return { text: JSON.stringify(response) };
+            } catch (e) {
+                console.error('[puterChat] Error:', e);
+                throw e;
+            }
+        };
+
+        window.puterChatStream = async function (prompt, options) {
+            if (!window.puterReady) throw new Error('Puter not ready');
+            options.stream = true;
+            const response = await puter.ai.chat(prompt, options);
+            const chunks = [];
+            for await (const part of response) {
+                if (part?.text) chunks.push(part.text);
+            }
+            return { text: chunks.join('') };
+        };
+
+        window.puterVision = async function (imageBase64, prompt, options) {
+            if (!window.puterReady) throw new Error('Puter not ready');
+            // Use img2txt or chat with image
+            const messages = [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'image', source: { type: 'base64', data: imageBase64 } },
+                        { type: 'text', text: prompt }
+                    ]
+                }
+            ];
+            const response = await puter.ai.chat(messages, options);
+            if (typeof response === 'string') return { text: response };
+            if (response.message?.content) {
+                if (Array.isArray(response.message.content)) {
+                    return { text: response.message.content.map(c => c.text || '').join('') };
+                }
+                return { text: response.message.content };
+            }
+            return { text: JSON.stringify(response) };
+        };
+
+        window.puterGenerateImage = async function (prompt, options) {
+            if (!window.puterReady) throw new Error('Puter not ready');
+            const imgElement = await puter.ai.txt2img(prompt, options);
+            // Return base64 of image
+            return { src: imgElement.src };
+        };
+
+        window.puterSignIn = async function (username, password) {
+            // Try to sign in
+            if (puter.auth && puter.auth.signIn) {
+                await puter.auth.signIn();
+                return { success: true };
+            }
+            return { success: false, error: 'signIn not available' };
+        };
+
+        window.puterIsSignedIn = function () {
+            return puter.auth && puter.auth.isSignedIn ? puter.auth.isSignedIn() : false;
+        };
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Puter AI API</title>
+    <script src="https://js.puter.com/v2/"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            min-height: 100vh;
+            color: #fff;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            text-align: center;
+            opacity: 0.7;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .card h2 {
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 1.2em;
+        }
+
+        .status-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #ff4757;
+            box-shadow: 0 0 10px #ff4757;
+        }
+
+        .status-dot.online {
+            background: #2ed573;
+            box-shadow: 0 0 10px #2ed573;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-green {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .tab {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            opacity: 0.8;
+            font-size: 0.9em;
+        }
+
+        input,
+        select,
+        textarea {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 1em;
+            font-family: inherit;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: monospace;
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+        }
+
+        .row>* {
+            flex: 1;
+        }
+
+        .response-box {
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 8px;
+            padding: 16px;
+            min-height: 150px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: monospace;
+            margin-top: 16px;
+        }
+
+        .response-box.loading {
+            opacity: 0.6;
+        }
+
+        .image-result {
+            max-width: 100%;
+            border-radius: 8px;
+            margin-top: 16px;
+        }
+
+        code {
+            background: rgba(0, 0, 0, 0.4);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Consolas', monospace;
+        }
+
+        .endpoint-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .endpoint {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 12px 16px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: monospace;
+        }
+
+        .method {
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 0.85em;
+        }
+
+        .method.get {
+            background: #2ed573;
+            color: #000;
+        }
+
+        .method.post {
+            background: #ffa502;
+            color: #000;
+        }
+
+        .method.delete {
+            background: #ff4757;
+            color: #fff;
+        }
+
+        .alert {
+            background: rgba(255, 71, 87, 0.2);
+            border: 1px solid rgba(255, 71, 87, 0.5);
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .alert-success {
+            background: rgba(46, 213, 115, 0.2);
+            border: 1px solid rgba(46, 213, 115, 0.5);
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .checkbox-group input {
+            width: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🚀 Puter AI API</h1>
+        <p class="subtitle">Free unlimited access to Claude, Gemini, DeepSeek & FLUX</p>
+
+        <!-- Auth Card -->
+        <div class="card">
+            <div class="status-bar">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Checking...</span>
+                <button class="btn" id="authBtn" onclick="handleAuth()" style="margin-left: auto;">Sign In</button>
+            </div>
+        </div>
+
+        <!-- Login Required Alert -->
+        <div class="alert" id="loginAlert">
+            ⚠️ <strong>Please sign in</strong> to use the AI features. Click "Sign In" above.
+        </div>
+
+        <!-- Main Content (hidden until logged in) -->
+        <div id="mainContent" class="hidden">
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab active" onclick="showTab('chat')">💬 Chat</button>
+                <button class="tab" onclick="showTab('image')">🎨 Image Generation</button>
+                <button class="tab" onclick="showTab('vision')">👁️ Vision</button>
+                <button class="tab" onclick="showTab('api')">📡 API Docs</button>
+            </div>
+
+            <!-- Chat Tab -->
+            <div class="tab-content active" id="tab-chat">
+                <div class="card">
+                    <h2>💬 Text Chat</h2>
+                    <div class="row">
+                        <div class="form-group">
+                            <label>Model</label>
+                            <select id="chatModel">
+                                <option value="gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                                <option value="claude-opus-4-5">Claude Opus 4.5</option>
+                                <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+                                <option value="deepseek-v3.2-speciale">DeepSeek V3.2</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Options</label>
+                            <div class="checkbox-group" style="height: 44px; align-items: center;">
+                                <input type="checkbox" id="streamMode"> <label for="streamMode"
+                                    style="margin: 0;">Stream</label>
+                                <input type="checkbox" id="thinkingMode" style="margin-left: 16px;"> <label
+                                    for="thinkingMode" style="margin: 0;">Thinking</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Message</label>
+                        <textarea id="chatPrompt" placeholder="Enter your message...">Hello! Who are you?</textarea>
+                    </div>
+                    <button class="btn btn-green" onclick="sendChat()" id="chatBtn">Send Message</button>
+                    <div class="response-box" id="chatResponse">Response will appear here...</div>
+                </div>
+            </div>
+
+            <!-- Image Tab -->
+            <div class="tab-content" id="tab-image">
+                <div class="card">
+                    <h2>🎨 Image Generation</h2>
+                    <div class="row">
+                        <div class="form-group">
+                            <label>Model</label>
+                            <select id="imageModel">
+                                <option value="black-forest-labs/FLUX.1-pro">FLUX.1 Pro</option>
+                                <option value="black-forest-labs/FLUX.1-schnell">FLUX.1 Schnell (Fast)</option>
+                                <option value="dall-e-3">DALL-E 3</option>
+                                <option value="gpt-image-1">GPT Image</option>
+                                <option value="stabilityai/stable-diffusion-3-medium">Stable Diffusion 3</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Quality</label>
+                            <select id="imageQuality">
+                                <option value="">Default</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="hd">HD</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Prompt</label>
+                        <textarea id="imagePrompt"
+                            placeholder="Describe the image...">A cute robot drinking coffee in a cozy cafe, digital art</textarea>
+                    </div>
+                    <button class="btn btn-green" onclick="generateImage()" id="imageBtn">Generate Image</button>
+                    <div class="response-box" id="imageResponse">Image will appear here...</div>
+                    <img id="generatedImage" class="image-result hidden">
+                </div>
+            </div>
+
+            <!-- Vision Tab -->
+            <div class="tab-content" id="tab-vision">
+                <div class="card">
+                    <h2>👁️ Image Understanding</h2>
+                    <div class="form-group">
+                        <label>Model</label>
+                        <select id="visionModel">
+                            <option value="claude-opus-4-5">Claude Opus 4.5</option>
+                            <option value="gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                            <option value="gpt-4o">GPT-4o</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Image URL or Data URL</label>
+                        <input type="text" id="visionImage" placeholder="https://example.com/image.jpg or paste base64">
+                    </div>
+                    <div class="form-group">
+                        <label>Question about the image</label>
+                        <textarea id="visionPrompt"
+                            placeholder="What do you see in this image?">What is in this image? Describe it in detail.</textarea>
+                    </div>
+                    <button class="btn btn-green" onclick="analyzeImage()" id="visionBtn">Analyze Image</button>
+                    <div class="response-box" id="visionResponse">Response will appear here...</div>
+                </div>
+            </div>
+
+            <!-- API Docs Tab -->
+            <div class="tab-content" id="tab-api">
+                <div class="card">
+                    <h2>📡 API Documentation</h2>
+                    <p style="margin-bottom: 16px; opacity: 0.8;">
+                        This API uses client-side authentication. To use it programmatically:
+                    </p>
+                    <div class="alert alert-success">
+                        <strong>How it works:</strong> Open this page in a browser, sign in once, and the session is
+                        saved.
+                        The AI calls happen directly in the browser using Puter.js.
+                    </div>
+
+                    <h3 style="margin: 20px 0 12px;">Server Endpoints</h3>
+                    <div class="endpoint-list">
+                        <div class="endpoint"><span class="method get">GET</span> /api/health - Health check</div>
+                        <div class="endpoint"><span class="method get">GET</span> /api/info - API information</div>
+                        <div class="endpoint"><span class="method get">GET</span> /api/chats - List all chats</div>
+                        <div class="endpoint"><span class="method post">POST</span> /api/chats - Create new chat</div>
+                        <div class="endpoint"><span class="method get">GET</span> /api/chats/:id - Get chat by ID</div>
+                        <div class="endpoint"><span class="method delete">DELETE</span> /api/chats/:id - Delete chat
+                        </div>
+                    </div>
+
+                    <h3 style="margin: 20px 0 12px;">JavaScript Example (in browser)</h3>
+                    <textarea readonly style="min-height: 200px;">// Text Chat
+const response = await puter.ai.chat("Hello!", { 
+    model: "gemini-3-pro-preview" 
+});
+console.log(response.message.content);
+
+// Streaming
+const stream = await puter.ai.chat("Tell me a story", { 
+    model: "claude-opus-4-5", 
+    stream: true 
+});
+for await (const chunk of stream) {
+    console.log(chunk.text);
+}
+
+// Image Generation
+const img = await puter.ai.txt2img("A sunset over mountains", {
+    model: "black-forest-labs/FLUX.1-pro"
+});
+document.body.appendChild(img);
+
+// Vision (Image Understanding)
+const result = await puter.ai.chat([{
+    role: "user",
+    content: [
+        { type: "image_url", image_url: { url: "https://..." } },
+        { type: "text", text: "What is this?" }
+    ]
+}], { model: "claude-opus-4-5" });</textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isSignedIn = false;
+
+        // Check auth on load
+        async function checkAuth() {
+            try {
+                isSignedIn = puter.auth.isSignedIn();
+                updateUI();
+            } catch (e) {
+                console.error('Auth check error:', e);
+            }
+        }
+
+        function updateUI() {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+            const btn = document.getElementById('authBtn');
+            const alert = document.getElementById('loginAlert');
+            const content = document.getElementById('mainContent');
+
+            if (isSignedIn) {
+                dot.classList.add('online');
+                text.textContent = 'Signed in ✓ API Ready';
+                btn.classList.add('hidden'); // Hide sign out button
+                alert.classList.add('hidden');
+                content.classList.remove('hidden');
+            } else {
+                dot.classList.remove('online');
+                text.textContent = 'Not signed in';
+                btn.textContent = 'Sign In';
+                btn.classList.remove('hidden');
+                alert.classList.remove('hidden');
+                content.classList.add('hidden');
+            }
+        }
+
+        async function handleAuth() {
+            try {
+                await puter.auth.signIn();
+                checkAuth();
+            } catch (e) {
+                console.error('Sign in error:', e);
+            }
+        }
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelector(`[onclick="showTab('${tabName}')"]`).classList.add('active');
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+        }
+
+        // Chat function
+        async function sendChat() {
+            const prompt = document.getElementById('chatPrompt').value;
+            const model = document.getElementById('chatModel').value;
+            const stream = document.getElementById('streamMode').checked;
+            const thinking = document.getElementById('thinkingMode').checked;
+            const btn = document.getElementById('chatBtn');
+            const response = document.getElementById('chatResponse');
+
+            if (!prompt || !isSignedIn) return;
+
+            btn.disabled = true;
+            response.textContent = 'Thinking...';
+            response.classList.add('loading');
+
+            try {
+                const options = { model };
+                if (stream) options.stream = true;
+                if (thinking) options.thinking = true;
+
+                if (stream) {
+                    const result = await puter.ai.chat(prompt, options);
+                    let text = '';
+                    for await (const chunk of result) {
+                        if (chunk?.text) {
+                            text += chunk.text;
+                            response.textContent = text;
+                        }
+                    }
+                } else {
+                    const result = await puter.ai.chat(prompt, options);
+                    let text = extractText(result);
+                    response.textContent = text;
+                }
+            } catch (e) {
+                response.textContent = 'Error: ' + e.message;
+            } finally {
+                btn.disabled = false;
+                response.classList.remove('loading');
+            }
+        }
+
+        // Image generation
+        async function generateImage() {
+            const prompt = document.getElementById('imagePrompt').value;
+            const model = document.getElementById('imageModel').value;
+            const quality = document.getElementById('imageQuality').value;
+            const btn = document.getElementById('imageBtn');
+            const response = document.getElementById('imageResponse');
+            const img = document.getElementById('generatedImage');
+
+            if (!prompt || !isSignedIn) return;
+
+            btn.disabled = true;
+            response.textContent = 'Generating image...';
+            response.classList.add('loading');
+            img.classList.add('hidden');
+
+            try {
+                const options = { model };
+                if (quality) options.quality = quality;
+
+                const imgElement = await puter.ai.txt2img(prompt, options);
+                img.src = imgElement.src;
+                img.classList.remove('hidden');
+                response.textContent = 'Image generated successfully!';
+            } catch (e) {
+                response.textContent = 'Error: ' + e.message;
+            } finally {
+                btn.disabled = false;
+                response.classList.remove('loading');
+            }
+        }
+
+        // Vision (image understanding)
+        async function analyzeImage() {
+            const imageUrl = document.getElementById('visionImage').value;
+            const prompt = document.getElementById('visionPrompt').value;
+            const model = document.getElementById('visionModel').value;
+            const btn = document.getElementById('visionBtn');
+            const response = document.getElementById('visionResponse');
+
+            if (!imageUrl || !prompt || !isSignedIn) return;
+
+            btn.disabled = true;
+            response.textContent = 'Analyzing image...';
+            response.classList.add('loading');
+
+            try {
+                const messages = [{
+                    role: "user",
+                    content: [
+                        { type: "image_url", image_url: { url: imageUrl } },
+                        { type: "text", text: prompt }
+                    ]
+                }];
+
+                const result = await puter.ai.chat(messages, { model });
+                response.textContent = extractText(result);
+            } catch (e) {
+                response.textContent = 'Error: ' + e.message;
+            } finally {
+                btn.disabled = false;
+                response.classList.remove('loading');
+            }
+        }
+
+        // Helper to extract text from various response formats
+        function extractText(result) {
+            if (typeof result === 'string') return result;
+            if (result.message?.content) {
+                if (Array.isArray(result.message.content)) {
+                    return result.message.content.map(c => c.text || '').join('');
+                }
+                return result.message.content;
+            }
+            if (result.text) return result.text;
+            return JSON.stringify(result, null, 2);
+        }
+
+        // Init
+        setTimeout(checkAuth, 500);
+    </script>
+</body>
+
+</html>
