@@ -4,227 +4,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Puter AI API - Server Login</title>
+    <title>Puter AI API</title>
+    <!-- Same CSS as before -->
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
         body {
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
-            min-height: 100vh;
-            color: #fff;
+            font-family: sans-serif;
+            background: #1a1a2e;
+            color: white;
             padding: 20px;
         }
 
         .container {
-            max-width: 1000px;
+            max-width: 800px;
             margin: 0 auto;
         }
 
-        h1 {
-            text-align: center;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }
-
-        .subtitle {
-            text-align: center;
-            opacity: 0.7;
-            margin-bottom: 30px;
-        }
-
         .card {
-            background: rgba(255, 255, 255, 0.08);
-            backdrop-filter: blur(10px);
-            border-radius: 16px;
-            padding: 24px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
             margin-bottom: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .status-bar {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            font-size: 1.2em;
-            flex-wrap: wrap;
-        }
-
-        .status-dot {
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            background: #ff4757;
-            box-shadow: 0 0 10px #ff4757;
-            animation: pulse 2s infinite;
-        }
-
-        .status-dot.online {
-            background: #2ed573;
-            box-shadow: 0 0 10px #2ed573;
-            animation: none;
-        }
-
-        .status-dot.loading {
-            background: #ffa502;
-            box-shadow: 0 0 10px #ffa502;
-        }
-
-        @keyframes pulse {
-
-            0%,
-            100% {
-                opacity: 1;
-            }
-
-            50% {
-                opacity: 0.5;
-            }
         }
 
         .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #667eea;
             border: none;
+            padding: 10px 20px;
             color: white;
-            padding: 14px 28px;
-            border-radius: 8px;
-            font-size: 1.1em;
+            border-radius: 5px;
             cursor: pointer;
-            transition: all 0.2s;
         }
 
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
-        }
-
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .btn-green {
-            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-        }
-
-        .hidden {
-            display: none !important;
-        }
-
-        .login-frame {
+        input {
+            padding: 10px;
             width: 100%;
-            height: 600px;
-            border: none;
-            border-radius: 12px;
-            background: white;
-            margin-top: 16px;
-        }
-
-        .alert {
-            background: rgba(255, 165, 2, 0.2);
-            border: 1px solid rgba(255, 165, 2, 0.5);
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-
-        .alert-success {
-            background: rgba(46, 213, 115, 0.2);
-            border: 1px solid rgba(46, 213, 115, 0.5);
-        }
-
-        .endpoint-list {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-top: 16px;
-        }
-
-        .endpoint {
+            margin: 10px 0;
             background: rgba(0, 0, 0, 0.3);
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-family: monospace;
-            display: flex;
-            align-items: center;
-            gap: 12px;
+            border: 1px solid #444;
+            color: white;
         }
 
-        .method {
-            padding: 4px 10px;
-            border-radius: 4px;
-            font-weight: bold;
-            font-size: 0.85em;
+        .success {
+            color: #44ff44;
         }
 
-        .method.get {
-            background: #2ed573;
-            color: #000;
-        }
-
-        .method.post {
-            background: #ffa502;
-            color: #000;
-        }
-
-        .test-area {
-            margin-top: 20px;
-        }
-
-        textarea,
-        input,
-        select {
-            width: 100%;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            color: #fff;
-            padding: 12px;
-            border-radius: 8px;
-            font-size: 1em;
-            font-family: inherit;
-            margin-bottom: 12px;
-        }
-
-        textarea {
-            min-height: 100px;
-            font-family: monospace;
-            resize: vertical;
-        }
-
-        .response-box {
-            background: rgba(0, 0, 0, 0.4);
-            padding: 16px;
-            border-radius: 8px;
-            min-height: 100px;
-            font-family: monospace;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-
-        .row {
-            display: flex;
-            gap: 12px;
-        }
-
-        .row>* {
-            flex: 1;
-        }
-
-        h2 {
-            margin-bottom: 16px;
-        }
-
-        .instructions {
-            line-height: 1.8;
-        }
-
-        .instructions li {
-            margin-bottom: 8px;
+        .error {
+            color: #ff4444;
         }
     </style>
 </head>
@@ -232,231 +57,94 @@
 <body>
     <div class="container">
         <h1>🚀 Puter AI API</h1>
-        <p class="subtitle">Server-Side Authentication - Login Once, Use Everywhere</p>
 
-        <!-- Status Card -->
         <div class="card">
-            <div class="status-bar">
-                <div class="status-dot" id="statusDot"></div>
-                <span id="statusText">Checking status...</span>
-                <button class="btn" id="loginBtn" onclick="startLogin()" style="margin-left: auto;">Login to
-                    Puter</button>
+            <h2>🔐 Server Authentication</h2>
+            <div id="status">Status: Checking...</div>
+
+            <div id="loginForm">
+                <p>1. Open <a href="https://puter.com" target="_blank" style="color: #4cc">puter.com</a> and log in.</p>
+                <p>2. Open Developer Tools (F12) -> Console.</p>
+                <p>3. Run: <code>copy(localStorage.getItem('token'))</code></p>
+                <p>4. Paste the token below:</p>
+
+                <input type="text" id="tokenInput" placeholder="Paste token here...">
+                <button class="btn" onclick="submitToken()">Authenticate Server</button>
             </div>
         </div>
 
-        <!-- Not Logged In -->
-        <div id="loginSection">
-            <div class="alert">
-                ⚠️ <strong>Server not authenticated.</strong> Login below to enable the API for all users.
-            </div>
-
-            <div class="card">
-                <h2>🔐 Server Authentication</h2>
-                <ol class="instructions">
-                    <li>Click <strong>"Login to Puter"</strong> button above</li>
-                    <li>If Cloudflare appears - complete the verification</li>
-                    <li>Click <strong>"Log In"</strong> (not Create Account)</li>
-                    <li>Enter your Puter credentials</li>
-                    <li>After successful login, the API will work for everyone!</li>
-                </ol>
-
-                <div id="loginFrameContainer" class="hidden">
-                    <iframe id="loginFrame" class="login-frame" src="about:blank"></iframe>
-                    <div style="margin-top: 12px; text-align: center;">
-                        <button class="btn btn-green" onclick="checkLoginStatus()">I've Completed Login - Check
-                            Status</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Logged In -->
-        <div id="apiSection" class="hidden">
-            <div class="alert alert-success">
-                ✅ <strong>Server authenticated!</strong> API is ready for all users.
-            </div>
-
-            <div class="card">
-                <h2>📡 API Endpoints</h2>
-                <p style="opacity: 0.8; margin-bottom: 12px;">Base URL: <code id="baseUrl"></code></p>
-                <div class="endpoint-list">
-                    <div class="endpoint"><span class="method get">GET</span> /api/health - Health check</div>
-                    <div class="endpoint"><span class="method get">GET</span> /api/auth/status - Auth status</div>
-                    <div class="endpoint"><span class="method post">POST</span> /api/chat - AI chat (requires prompt,
-                        optional: model, messages)</div>
-                    <div class="endpoint"><span class="method post">POST</span> /api/image/generate - Generate image
-                        (requires prompt, optional: model)</div>
-                    <div class="endpoint"><span class="method get">GET</span> /api/chats - List chats</div>
-                    <div class="endpoint"><span class="method post">POST</span> /api/chats - Create chat</div>
-                </div>
-            </div>
-
-            <div class="card">
-                <h2>🧪 Test Chat API</h2>
-                <div class="row">
-                    <select id="testModel">
-                        <option value="gemini-3-pro-preview">Gemini 3 Pro Preview</option>
-                        <option value="claude-opus-4-5">Claude Opus 4.5</option>
-                        <option value="deepseek-v3.2-speciale">DeepSeek V3.2</option>
-                    </select>
-                </div>
-                <input type="text" id="testPrompt" placeholder="Enter message..." value="Hello! Who are you?">
-                <button class="btn btn-green" onclick="testChat()" id="testBtn">Send Request</button>
-                <div class="response-box" id="testResponse">Response will appear here...</div>
-            </div>
-
-            <div class="card">
-                <h2>📖 Usage Example</h2>
-                <textarea readonly style="min-height: 180px;">// From any device/script - no login needed!
-const response = await fetch('YOUR_RENDER_URL/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-        prompt: 'Hello!',
-        model: 'gemini-3-pro-preview'
-    })
-});
-const data = await response.json();
-console.log(data.text);
-
-// Image generation
-const imgResponse = await fetch('YOUR_RENDER_URL/api/image/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-        prompt: 'A beautiful sunset',
-        model: 'black-forest-labs/FLUX.1-pro'
-    })
-});
-const imgData = await imgResponse.json();
-console.log(imgData.src); // base64 image URL</textarea>
-            </div>
+        <div class="card hidden" id="testArea">
+            <h2>🧪 Test API</h2>
+            <input type="text" id="prompt" placeholder="Message...">
+            <button class="btn" onclick="sendChat()">Send</button>
+            <pre id="response" style="margin-top: 10px; background: rgba(0,0,0,0.3); padding: 10px;"></pre>
         </div>
     </div>
 
     <script>
-        let isLoggedIn = false;
-
-        // Check status on load
         async function checkStatus() {
             try {
-                const res = await fetch('/api/auth/status');
+                const res = await fetch('/api/health');
                 const data = await res.json();
-                isLoggedIn = data.loggedIn;
-                updateUI();
-            } catch (e) {
-                console.error('Status check failed:', e);
-            }
-        }
+                const statusDiv = document.getElementById('status');
 
-        function updateUI() {
-            const dot = document.getElementById('statusDot');
-            const text = document.getElementById('statusText');
-            const btn = document.getElementById('loginBtn');
-            const loginSection = document.getElementById('loginSection');
-            const apiSection = document.getElementById('apiSection');
-
-            if (isLoggedIn) {
-                dot.classList.add('online');
-                dot.classList.remove('loading');
-                text.textContent = '✓ Server Authenticated - API Ready';
-                btn.classList.add('hidden');
-                loginSection.classList.add('hidden');
-                apiSection.classList.remove('hidden');
-                document.getElementById('baseUrl').textContent = window.location.origin;
-            } else {
-                dot.classList.remove('online');
-                text.textContent = 'Not authenticated';
-                btn.classList.remove('hidden');
-                loginSection.classList.remove('hidden');
-                apiSection.classList.add('hidden');
-            }
-        }
-
-        async function startLogin() {
-            const btn = document.getElementById('loginBtn');
-            const frameContainer = document.getElementById('loginFrameContainer');
-            const frame = document.getElementById('loginFrame');
-            const dot = document.getElementById('statusDot');
-            const text = document.getElementById('statusText');
-
-            btn.disabled = true;
-            btn.textContent = 'Opening...';
-            dot.classList.add('loading');
-            text.textContent = 'Starting login...';
-
-            try {
-                // Trigger login on server
-                const res = await fetch('/api/auth/login', { method: 'POST' });
-                const data = await res.json();
-
-                // Show iframe with login page
-                frame.src = data.popupUrl || 'https://puter.com/action/sign-in?embedded_in_popup=true&msg_id=1';
-                frameContainer.classList.remove('hidden');
-                text.textContent = 'Complete login in the frame below ↓';
-            } catch (e) {
-                text.textContent = 'Login failed: ' + e.message;
-            }
-
-            btn.disabled = false;
-            btn.textContent = 'Retry Login';
-        }
-
-        async function checkLoginStatus() {
-            const dot = document.getElementById('statusDot');
-            const text = document.getElementById('statusText');
-
-            dot.classList.add('loading');
-            text.textContent = 'Checking login status...';
-
-            try {
-                const res = await fetch('/api/auth/check');
-                const data = await res.json();
-                isLoggedIn = data.loggedIn;
-
-                if (!isLoggedIn) {
-                    text.textContent = 'Not logged in yet. Complete the login in the iframe.';
+                if (data.loggedIn) {
+                    statusDiv.innerHTML = 'Status: <span class="success">Authenticated ✅</span>';
+                    document.getElementById('loginForm').classList.add('hidden');
+                    document.getElementById('testArea').classList.remove('hidden');
+                } else {
+                    statusDiv.innerHTML = 'Status: <span class="error">Not Authenticated ❌</span>';
+                    document.getElementById('loginForm').classList.remove('hidden');
+                    document.getElementById('testArea').classList.add('hidden');
                 }
-                updateUI();
             } catch (e) {
-                text.textContent = 'Check failed: ' + e.message;
+                console.error(e);
             }
         }
 
-        async function testChat() {
-            const prompt = document.getElementById('testPrompt').value;
-            const model = document.getElementById('testModel').value;
-            const btn = document.getElementById('testBtn');
-            const response = document.getElementById('testResponse');
+        async function submitToken() {
+            const token = document.getElementById('tokenInput').value;
+            if (!token) return alert('Enter token');
 
-            if (!prompt) return;
-
+            const btn = document.querySelector('button');
             btn.disabled = true;
-            response.textContent = 'Sending request...';
+            btn.textContent = 'Injecting...';
 
             try {
-                const res = await fetch('/api/chat', {
+                const res = await fetch('/api/auth/token', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt, model })
+                    body: JSON.stringify({ token })
                 });
                 const data = await res.json();
 
-                if (data.error) {
-                    response.textContent = 'Error: ' + data.error;
+                if (data.success) {
+                    alert('Success! Server is authenticated.');
+                    checkStatus();
                 } else {
-                    response.textContent = data.text || JSON.stringify(data, null, 2);
+                    alert('Failed to authenticate. Token might be invalid.');
                 }
             } catch (e) {
-                response.textContent = 'Request failed: ' + e.message;
+                alert('Error: ' + e.message);
             }
 
             btn.disabled = false;
+            btn.textContent = 'Authenticate Server';
         }
 
-        // Init
+        async function sendChat() {
+            const prompt = document.getElementById('prompt').value;
+            const res = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt })
+            });
+            const data = await res.json();
+            document.getElementById('response').textContent = JSON.stringify(data, null, 2);
+        }
+
         checkStatus();
-        setInterval(checkStatus, 10000); // Check every 10s
+        setInterval(checkStatus, 5000);
     </script>
 </body>
 
