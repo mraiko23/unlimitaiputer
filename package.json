@@ -1,7 +1,7 @@
 {
     "name": "puter-ai-api",
     "version": "2.0.0",
-    "description": "Puter.js AI API Server with server-side auth",
+    "description": "Puter.js AI API Server",
     "main": "server.js",
     "scripts": {
         "start": "node server.js"
