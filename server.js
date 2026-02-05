@@ -62,13 +62,8 @@ async function initBrowser() {
             }
         }
 
-        if (!executablePath) {
-            throw new Error('Chrome executable not found. Set PUPPETEER_EXECUTABLE_PATH or install browser.');
-        }
-
-        browser = await puppeteer.launch({
+        const launchOptions = {
             headless: 'new',
-            executablePath: executablePath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -76,67 +71,74 @@ async function initBrowser() {
                 '--disable-gpu',
                 '--disable-extensions'
             ]
-        });
+        };
 
+        if (executablePath) {
+            launchOptions.executablePath = executablePath;
+        }
+
+        browser = await puppeteer.launch(launchOptions);
         page = await browser.newPage();
 
-        // Block heavy resources
+        // Block heavy resources to speed up puter.com load
         await page.setRequestInterception(true);
         page.on('request', (req) => {
-            if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+            const type = req.resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(type) || req.url().includes('google-analytics')) {
                 req.abort();
             } else {
                 req.continue();
             }
         });
 
-        await loadPuterClient();
+        console.log('[Browser] Navigating to https://puter.com...');
+        await page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+        // Inject helpers
+        await injectHelpers();
+
         isReady = true;
         console.log('[Browser] Ready');
 
-        // Check initial auth status
+        // Check if we are already logged in (from previous session/cookies)
         isLoggedIn = await page.evaluate(() => window.checkLogin());
-        console.log(`[Browser] Logged in: ${isLoggedIn}`);
+        console.log(`[Browser] Initial Status: ${isLoggedIn ? 'Logged In' : 'Guest'}`);
 
     } catch (e) {
         console.error('[Browser] Init failed:', e);
-        process.exit(1); // Exit if browser fails so Render restarts
+        process.exit(1);
     }
 }
 
-async function loadPuterClient() {
-    const clientHtml = `
-    <!DOCTYPE html>
-    <html>
-    <head><script src="https://js.puter.com/v2/"></script></head>
-    <body>
-        <script>
-            window.puterReady = false;
-            window.checkLogin = () => puter.auth.isSignedIn();
-            
-            // Wait for puter
-            const timer = setInterval(() => {
-                if (typeof puter !== 'undefined' && puter.ai) {
-                    window.puterReady = true;
-                    clearInterval(timer);
-                }
-            }, 100);
+async function injectHelpers() {
+    await page.evaluate(() => {
+        window.puterReady = true; // Use existing puter instance on the page
 
-            // Token injection
-            window.loginWithToken = (token) => {
-                localStorage.setItem('puter_token', token);
-                localStorage.setItem('puter_token_expiry', Date.now() + 86400000); // Fake expiry
-                location.reload();
-            };
+        window.checkLogin = () => {
+            // Check specific storage keys that indicate login
+            return !!(localStorage.getItem('token') || localStorage.getItem('puter_token'));
+        };
 
-            window.doChat = async (p, o) => await puter.ai.chat(p, o);
-            window.doImage = async (p, o) => await puter.ai.txt2img(p, o);
-        </script>
-    </body>
-    </html>`;
+        window.loginWithToken = (token) => {
+            // Set all known keys
+            localStorage.setItem('token', token);
+            localStorage.setItem('puter_token', token);
+            // Reload to apply
+            window.location.reload();
+        };
 
-    await page.setContent(clientHtml);
-    await page.waitForFunction(() => window.puterReady === true, { timeout: 30000 });
+        // API wrappers using the global 'puter' object present on the site
+        window.doChat = async (prompt, model) => {
+            // Need to ensure puter lib is available
+            if (typeof puter === 'undefined') throw new Error('Puter lib not found');
+            return await puter.ai.chat(prompt, { model: model });
+        };
+
+        window.doImage = async (prompt, model) => {
+            if (typeof puter === 'undefined') throw new Error('Puter lib not found');
+            return await puter.ai.txt2img(prompt, { model: model });
+        };
+    });
 }
 
 // =====================
