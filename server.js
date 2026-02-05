@@ -1,6 +1,6 @@
 /**
  * Puter AI API Server
- * Auth strategy: User provides token -> Server injects into Puppeteer
+ * Auth strategy: User provides token -> Server injects into Puppeteer on puter.com origin
  */
 
 const express = require('express');
@@ -47,19 +47,23 @@ async function initBrowser() {
     try {
         let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
 
-        // Auto-discover Chrome if not set or invalid
+        // Auto-discover Chrome
         if (!executablePath || !fs.existsSync(executablePath)) {
             console.log('[Browser] Searching for Chrome in .cache...');
             const cacheDir = path.join(__dirname, '.cache', 'puppeteer', 'chrome');
             if (fs.existsSync(cacheDir)) {
-                // Find any linux-* directory
                 const versions = fs.readdirSync(cacheDir).filter(f => f.startsWith('linux-'));
                 if (versions.length > 0) {
-                    // Use the first one found (usually only one)
                     executablePath = path.join(cacheDir, versions[0], 'chrome-linux64', 'chrome');
                     console.log(`[Browser] Found Chrome at: ${executablePath}`);
                 }
             }
+        }
+
+        if (!executablePath) {
+            // Fallback for local dev if not found
+            // executablePath = '/usr/bin/google-chrome'; 
+            console.warn('[Browser] Warning: No executable path found via auto-discovery.');
         }
 
         const launchOptions = {
@@ -73,14 +77,12 @@ async function initBrowser() {
             ]
         };
 
-        if (executablePath) {
-            launchOptions.executablePath = executablePath;
-        }
+        if (executablePath) launchOptions.executablePath = executablePath;
 
         browser = await puppeteer.launch(launchOptions);
         page = await browser.newPage();
 
-        // Block heavy resources to speed up puter.com load
+        // Block heavy resources
         await page.setRequestInterception(true);
         page.on('request', (req) => {
             const type = req.resourceType();
@@ -92,17 +94,19 @@ async function initBrowser() {
         });
 
         console.log('[Browser] Navigating to https://puter.com...');
-        await page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        try {
+            await page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        } catch (e) {
+            console.log('[Browser] Navigation timeout (non-fatal), expecting page to be somewhat loaded.');
+        }
 
-        // Inject helpers
         await injectHelpers();
 
         isReady = true;
-        console.log('[Browser] Ready');
 
-        // Check if we are already logged in (from previous session/cookies)
+        // Check initial auth
         isLoggedIn = await page.evaluate(() => window.checkLogin());
-        console.log(`[Browser] Initial Status: ${isLoggedIn ? 'Logged In' : 'Guest'}`);
+        console.log(`[Browser] Ready. Logged in: ${isLoggedIn}`);
 
     } catch (e) {
         console.error('[Browser] Init failed:', e);
@@ -112,30 +116,27 @@ async function initBrowser() {
 
 async function injectHelpers() {
     await page.evaluate(() => {
-        window.puterReady = true; // Use existing puter instance on the page
-
+        // Helper to check login
         window.checkLogin = () => {
-            // Check specific storage keys that indicate login
             return !!(localStorage.getItem('token') || localStorage.getItem('puter_token'));
         };
 
-        window.loginWithToken = (token) => {
-            // Set all known keys
+        // Helper to inject token
+        window.injectToken = (token) => {
             localStorage.setItem('token', token);
             localStorage.setItem('puter_token', token);
-            // Reload to apply
-            window.location.reload();
+            // Cookies for good measure
+            document.cookie = `token=${token}; path=/; domain=.puter.com; secure; samesite=lax`;
         };
 
-        // API wrappers using the global 'puter' object present on the site
+        // API wrappers using global `puter` instance
         window.doChat = async (prompt, model) => {
-            // Need to ensure puter lib is available
-            if (typeof puter === 'undefined') throw new Error('Puter lib not found');
+            if (typeof puter === 'undefined' || !puter.ai) throw new Error('Puter.js not ready');
             return await puter.ai.chat(prompt, { model: model });
         };
 
         window.doImage = async (prompt, model) => {
-            if (typeof puter === 'undefined') throw new Error('Puter lib not found');
+            if (typeof puter === 'undefined' || !puter.ai) throw new Error('Puter.js not ready');
             return await puter.ai.txt2img(prompt, { model: model });
         };
     });
@@ -156,34 +157,26 @@ app.post('/api/auth/token', async (req, res) => {
 
     try {
         console.log('[Auth] Injecting token...');
-        await page.evaluate((t) => {
-            localStorage.setItem('puter_auth_token', t); // Try standard name
-            // Also try puter cookie via header injection in real scenarios, 
-            // but for Puter.js, localStorage is usually key.
-            // Puter.js v2 often uses 'puter_token' or internal storage.
-            // Let's try setting the common keys.
-            localStorage.setItem('token', t);
-        }, token);
 
-        // We might need to set a cookie too
-        await page.setCookie({
-            name: 'token',
-            value: token,
-            domain: '.puter.com'
-        });
+        // Inject
+        await page.evaluate((t) => window.injectToken(t), token);
 
-        // Forced reload to pick up auth
-        await page.reload();
-        await page.waitForFunction(() => window.puterReady === true);
+        // Reload to apply
+        console.log('[Auth] Reloading page...');
+        await page.reload({ waitUntil: 'domcontentloaded' });
 
-        // Wait a bit
-        await new Promise(r => setTimeout(r, 2000));
+        // Re-inject helpers
+        await injectHelpers();
 
-        isLoggedIn = await page.evaluate(() => puter.auth.isSignedIn());
-        console.log(`[Auth] Login result: ${isLoggedIn}`);
+        // Allow puter.js to initialize
+        await new Promise(r => setTimeout(r, 3000));
+
+        isLoggedIn = await page.evaluate(() => window.checkLogin());
+        console.log(`[Auth] New status: ${isLoggedIn}`);
 
         res.json({ success: isLoggedIn });
     } catch (e) {
+        console.error('[Auth] Error:', e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -192,25 +185,61 @@ app.post('/api/chat', async (req, res) => {
     if (!isLoggedIn) return res.status(401).json({ error: 'Server not authenticated' });
 
     try {
-        const { prompt, model, stream } = req.body;
-        // ... (simplified for brevity)
+        const { prompt, model = 'gemini-3-pro-preview', messages, stream = false } = req.body;
+
+        const input = messages || prompt;
+        if (!input) return res.status(400).json({ error: 'No prompt/messages' });
+
+        const result = await page.evaluate(async (i, m) => {
+            return await window.doChat(i, m);
+        }, input, model);
+
+        // Normalize response
+        let text = '';
+        if (typeof result === 'string') text = result;
+        else if (result?.message?.content) {
+            text = Array.isArray(result.message.content)
+                ? result.message.content.map(c => c.text).join('')
+                : result.message.content;
+        } else if (result?.text) {
+            text = result.text;
+        } else {
+            text = JSON.stringify(result);
+        }
+
+        // Return standard structure if requested, or just text
+        // Keep compat with old API expectation for now
+        res.json({ text, full: result });
+
+    } catch (e) {
+        console.error('[Chat] Error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/image/generate', async (req, res) => {
+    if (!isLoggedIn) return res.status(401).json({ error: 'Not logged in' });
+    try {
+        const { prompt, model = 'black-forest-labs/FLUX.1-pro' } = req.body;
         const result = await page.evaluate(async (p, m) => {
-            return await puter.ai.chat(p, { model: m });
-        }, prompt, model || 'gemini-3-pro-preview');
-
-        // Extract text
-        let text = result?.message?.content || result?.text || JSON.stringify(result);
-        if (Array.isArray(text)) text = text.map(c => c.text).join('');
-
-        res.json({ text });
+            return await window.doImage(p, m);
+        }, prompt, model);
+        res.json(result);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// Bind to 0.0.0.0 for Render
+// Chat Management (Simple Store)
+app.get('/api/chats', (req, res) => res.json(chatStore.getAllChats()));
+app.post('/api/chats', (req, res) => {
+    res.status(201).json(chatStore.createChat(req.body.title, req.body.model));
+});
+
+// Bind
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
-    initBrowser();
+    // Delay browser launch slightly to let server start
+    setTimeout(initBrowser, 1000);
     startKeepAlive();
 });
