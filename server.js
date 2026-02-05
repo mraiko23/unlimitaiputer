@@ -45,51 +45,68 @@ function startKeepAlive() {
 async function initBrowser() {
     console.log('[Browser] Launching...');
     try {
-        const launchOptions = {
-            headless: 'new',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu'
-            ]
-        };
+        try {
+            let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
 
-        // Use executable path if provided (required for puppeteer-core on Render)
-        if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-            launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-        }
-
-        browser = await puppeteer.launch(launchOptions);
-
-        page = await browser.newPage();
-
-        // Block heavy resources
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
-                req.abort();
-            } else {
-                req.continue();
+            // Auto-discover Chrome if not set or invalid
+            if (!executablePath || !fs.existsSync(executablePath)) {
+                console.log('[Browser] Searching for Chrome in .cache...');
+                const cacheDir = path.join(__dirname, '.cache', 'puppeteer', 'chrome');
+                if (fs.existsSync(cacheDir)) {
+                    // Find any linux-* directory
+                    const versions = fs.readdirSync(cacheDir).filter(f => f.startsWith('linux-'));
+                    if (versions.length > 0) {
+                        // Use the first one found (usually only one)
+                        executablePath = path.join(cacheDir, versions[0], 'chrome-linux64', 'chrome');
+                        console.log(`[Browser] Found Chrome at: ${executablePath}`);
+                    }
+                }
             }
-        });
 
-        await loadPuterClient();
-        isReady = true;
-        console.log('[Browser] Ready');
+            if (!executablePath) {
+                throw new Error('Chrome executable not found. Set PUPPETEER_EXECUTABLE_PATH or install browser.');
+            }
 
-        // Check initial auth status
-        isLoggedIn = await page.evaluate(() => window.checkLogin());
-        console.log(`[Browser] Logged in: ${isLoggedIn}`);
+            browser = await puppeteer.launch({
+                headless: 'new',
+                executablePath: executablePath,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--disable-extensions'
+                ]
+            });
 
-    } catch (e) {
-        console.error('[Browser] Init failed:', e);
-        process.exit(1); // Exit if browser fails so Render restarts
+            page = await browser.newPage();
+
+            // Block heavy resources
+            await page.setRequestInterception(true);
+            page.on('request', (req) => {
+                if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+                    req.abort();
+                } else {
+                    req.continue();
+                }
+            });
+
+            await loadPuterClient();
+            isReady = true;
+            console.log('[Browser] Ready');
+
+            // Check initial auth status
+            isLoggedIn = await page.evaluate(() => window.checkLogin());
+            console.log(`[Browser] Logged in: ${isLoggedIn}`);
+
+        } catch (e) {
+            console.error('[Browser] Init failed:', e);
+            process.exit(1); // Exit if browser fails so Render restarts
+        }
     }
-}
 
 async function loadPuterClient() {
-    const clientHtml = `
+        const clientHtml = `
     <!DOCTYPE html>
     <html>
     <head><script src="https://js.puter.com/v2/"></script></head>
@@ -119,80 +136,80 @@ async function loadPuterClient() {
     </body>
     </html>`;
 
-    await page.setContent(clientHtml);
-    await page.waitForFunction(() => window.puterReady === true, { timeout: 30000 });
-}
-
-// =====================
-// Endpoints
-// =====================
-
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', ready: isReady, loggedIn: isLoggedIn });
-});
-
-app.post('/api/auth/token', async (req, res) => {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: 'Token required' });
-    if (!isReady) return res.status(503).json({ error: 'Browser not ready' });
-
-    try {
-        console.log('[Auth] Injecting token...');
-        await page.evaluate((t) => {
-            localStorage.setItem('puter_auth_token', t); // Try standard name
-            // Also try puter cookie via header injection in real scenarios, 
-            // but for Puter.js, localStorage is usually key.
-            // Puter.js v2 often uses 'puter_token' or internal storage.
-            // Let's try setting the common keys.
-            localStorage.setItem('token', t);
-        }, token);
-
-        // We might need to set a cookie too
-        await page.setCookie({
-            name: 'token',
-            value: token,
-            domain: '.puter.com'
-        });
-
-        // Forced reload to pick up auth
-        await page.reload();
-        await page.waitForFunction(() => window.puterReady === true);
-
-        // Wait a bit
-        await new Promise(r => setTimeout(r, 2000));
-
-        isLoggedIn = await page.evaluate(() => puter.auth.isSignedIn());
-        console.log(`[Auth] Login result: ${isLoggedIn}`);
-
-        res.json({ success: isLoggedIn });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
+        await page.setContent(clientHtml);
+        await page.waitForFunction(() => window.puterReady === true, { timeout: 30000 });
     }
-});
 
-app.post('/api/chat', async (req, res) => {
-    if (!isLoggedIn) return res.status(401).json({ error: 'Server not authenticated' });
+    // =====================
+    // Endpoints
+    // =====================
 
-    try {
-        const { prompt, model, stream } = req.body;
-        // ... (simplified for brevity)
-        const result = await page.evaluate(async (p, m) => {
-            return await puter.ai.chat(p, { model: m });
-        }, prompt, model || 'gemini-3-pro-preview');
+    app.get('/api/health', (req, res) => {
+        res.json({ status: 'ok', ready: isReady, loggedIn: isLoggedIn });
+    });
 
-        // Extract text
-        let text = result?.message?.content || result?.text || JSON.stringify(result);
-        if (Array.isArray(text)) text = text.map(c => c.text).join('');
+    app.post('/api/auth/token', async (req, res) => {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ error: 'Token required' });
+        if (!isReady) return res.status(503).json({ error: 'Browser not ready' });
 
-        res.json({ text });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
+        try {
+            console.log('[Auth] Injecting token...');
+            await page.evaluate((t) => {
+                localStorage.setItem('puter_auth_token', t); // Try standard name
+                // Also try puter cookie via header injection in real scenarios, 
+                // but for Puter.js, localStorage is usually key.
+                // Puter.js v2 often uses 'puter_token' or internal storage.
+                // Let's try setting the common keys.
+                localStorage.setItem('token', t);
+            }, token);
 
-// Bind to 0.0.0.0 for Render
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
-    initBrowser();
-    startKeepAlive();
-});
+            // We might need to set a cookie too
+            await page.setCookie({
+                name: 'token',
+                value: token,
+                domain: '.puter.com'
+            });
+
+            // Forced reload to pick up auth
+            await page.reload();
+            await page.waitForFunction(() => window.puterReady === true);
+
+            // Wait a bit
+            await new Promise(r => setTimeout(r, 2000));
+
+            isLoggedIn = await page.evaluate(() => puter.auth.isSignedIn());
+            console.log(`[Auth] Login result: ${isLoggedIn}`);
+
+            res.json({ success: isLoggedIn });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post('/api/chat', async (req, res) => {
+        if (!isLoggedIn) return res.status(401).json({ error: 'Server not authenticated' });
+
+        try {
+            const { prompt, model, stream } = req.body;
+            // ... (simplified for brevity)
+            const result = await page.evaluate(async (p, m) => {
+                return await puter.ai.chat(p, { model: m });
+            }, prompt, model || 'gemini-3-pro-preview');
+
+            // Extract text
+            let text = result?.message?.content || result?.text || JSON.stringify(result);
+            if (Array.isArray(text)) text = text.map(c => c.text).join('');
+
+            res.json({ text });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    // Bind to 0.0.0.0 for Render
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Server running on port ${PORT}`);
+        initBrowser();
+        startKeepAlive();
+    });
