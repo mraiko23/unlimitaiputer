@@ -47,23 +47,50 @@ async function initBrowser() {
     try {
         let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
 
-        // Auto-discover Chrome
+        // Auto-discover Chrome (Render & Local)
         if (!executablePath || !fs.existsSync(executablePath)) {
-            console.log('[Browser] Searching for Chrome in .cache...');
+            console.log('[Browser] Searching for Chrome...');
+
+            // 1. Try Render Cache (Linux)
             const cacheDir = path.join(__dirname, '.cache', 'puppeteer', 'chrome');
             if (fs.existsSync(cacheDir)) {
                 const versions = fs.readdirSync(cacheDir).filter(f => f.startsWith('linux-'));
                 if (versions.length > 0) {
                     executablePath = path.join(cacheDir, versions[0], 'chrome-linux64', 'chrome');
-                    console.log(`[Browser] Found Chrome at: ${executablePath}`);
+                }
+            }
+
+            // 2. Try Standard System Paths (Windows/Mac/Linux fallback)
+            if (!executablePath) {
+                const platform = process.platform;
+                const localPaths = [];
+                if (platform === 'win32') {
+                    localPaths.push(
+                        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+                        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+                        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
+                    );
+                } else if (platform === 'darwin') {
+                    localPaths.push(
+                        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
+                    );
+                } else {
+                    localPaths.push('/usr/bin/google-chrome', '/usr/bin/google-chrome-stable');
+                }
+
+                for (const p of localPaths) {
+                    if (fs.existsSync(p)) {
+                        executablePath = p;
+                        console.log(`[Browser] Found system browser: ${p}`);
+                        break;
+                    }
                 }
             }
         }
 
         if (!executablePath) {
-            // Fallback for local dev if not found
-            // executablePath = '/usr/bin/google-chrome'; 
-            console.warn('[Browser] Warning: No executable path found via auto-discovery.');
+            console.warn('[Browser] Warning: Browser path not found. Puppeteer might fail launch.');
         }
 
         const launchOptions = {
@@ -82,62 +109,78 @@ async function initBrowser() {
         browser = await puppeteer.launch(launchOptions);
         page = await browser.newPage();
 
-        // Block heavy resources
+        // ENABLE REQUEST INTERCEPTION FOR AUTH INJECTION
         await page.setRequestInterception(true);
-        page.on('request', (req) => {
+
+        page.on('request', async (req) => {
+            const url = req.url();
             const type = req.resourceType();
-            if (['image', 'stylesheet', 'font', 'media'].includes(type) || req.url().includes('google-analytics')) {
-                req.abort();
-            } else {
-                req.continue();
+
+            // 1. Block heavy resources
+            if (['image', 'stylesheet', 'font', 'media'].includes(type) || url.includes('google-analytics')) {
+                return req.abort();
             }
+
+            // 2. Inject Authorization Header for API calls
+            if (url.includes('api.puter.com') || url.includes('/api/')) {
+                const token = await page.evaluate(() => localStorage.getItem('token'));
+                if (token) {
+                    const headers = req.headers();
+                    headers['Authorization'] = `Bearer ${token}`;
+                    return req.continue({ headers });
+                }
+            }
+
+            req.continue();
         });
 
         console.log('[Browser] Navigating to https://puter.com...');
         try {
             await page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
         } catch (e) {
-            console.log('[Browser] Navigation timeout (non-fatal), expecting page to be somewhat loaded.');
+            console.log('[Browser] Navigation timeout (non-fatal).');
         }
 
         await injectHelpers();
-
         isReady = true;
 
-        // Check initial auth
         isLoggedIn = await page.evaluate(() => window.checkLogin());
         console.log(`[Browser] Ready. Logged in: ${isLoggedIn}`);
 
     } catch (e) {
         console.error('[Browser] Init failed:', e);
-        process.exit(1);
+        // Don't exit process locally, but exit on render to force restart
+        if (process.env.RENDER) process.exit(1);
     }
 }
 
 async function injectHelpers() {
     await page.evaluate(() => {
-        // Helper to check login
+        window.puterReady = true;
+
         window.checkLogin = () => {
             return !!(localStorage.getItem('token') || localStorage.getItem('puter_token'));
         };
 
-        // Helper to inject token
         window.injectToken = (token) => {
             localStorage.setItem('token', token);
             localStorage.setItem('puter_token', token);
-            // Cookies for good measure
             document.cookie = `token=${token}; path=/; domain=.puter.com; secure; samesite=lax`;
         };
 
-        // API wrappers using global `puter` instance
         window.doChat = async (prompt, model) => {
-            if (typeof puter === 'undefined' || !puter.ai) throw new Error('Puter.js not ready');
-            return await puter.ai.chat(prompt, { model: model });
+            // Try to use puter instance if available
+            if (typeof puter !== 'undefined' && puter.ai) {
+                return await puter.ai.chat(prompt, { model });
+            }
+            throw new Error('Puter.js not ready');
         };
 
         window.doImage = async (prompt, model) => {
-            if (typeof puter === 'undefined' || !puter.ai) throw new Error('Puter.js not ready');
-            return await puter.ai.txt2img(prompt, { model: model });
+            if (typeof puter !== 'undefined' && puter.ai) {
+                return await puter.ai.txt2img(prompt, { model });
+            }
+            throw new Error('Puter.js not ready');
         };
     });
 }
@@ -207,8 +250,6 @@ app.post('/api/chat', async (req, res) => {
             text = JSON.stringify(result);
         }
 
-        // Return standard structure if requested, or just text
-        // Keep compat with old API expectation for now
         res.json({ text, full: result });
 
     } catch (e) {
