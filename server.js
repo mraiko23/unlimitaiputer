@@ -45,7 +45,7 @@ function startKeepAlive() {
 async function initBrowser() {
     console.log('[Browser] Launching...');
     try {
-        browser = await puppeteer.launch({
+        const launchOptions = {
             headless: 'new',
             args: [
                 '--no-sandbox',
@@ -53,7 +53,14 @@ async function initBrowser() {
                 '--disable-dev-shm-usage',
                 '--disable-gpu'
             ]
-        });
+        };
+
+        // Use executable path if provided (required for puppeteer-core on Render)
+        if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+            launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+        }
+
+        browser = await puppeteer.launch(launchOptions);
 
         page = await browser.newPage();
 
