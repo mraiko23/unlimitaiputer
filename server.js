@@ -158,20 +158,24 @@ class BrowserSession {
         }
 
         if (loggedIn) {
-            // Extract token directly from puter object
-            const tokenInfo = await this.page.evaluate(() => {
-                const token = (typeof puter !== 'undefined') ? puter.authToken : null;
-                return {
-                    hasToken: !!token,
-                    tokenPreview: token ? token.substring(0, 40) + '...' : null
-                };
-            });
+            // Wait for token to be captured from network requests
+            console.log(`[Session #${this.id}] API detected, waiting for token capture...`);
 
-            console.log(`[Session #${this.id}] READY! ✅`);
-            console.log(`[Session #${this.id}] 🔑 puter.authToken: ${tokenInfo.tokenPreview || 'NONE'}`);
+            for (let t = 0; t < 15; t++) { // Wait up to 30 seconds for token
+                if (this.capturedToken) break;
+                await new Promise(r => setTimeout(r, 2000));
+            }
 
-            this.isReady = true;
-            this.status = 'ready';
+            if (this.capturedToken) {
+                console.log(`[Session #${this.id}] READY! ✅`);
+                console.log(`[Session #${this.id}] 🔑 Token: ${this.capturedToken.substring(0, 40)}...`);
+                this.isReady = true;
+                this.status = 'ready';
+            } else {
+                console.warn(`[Session #${this.id}] Token not captured. ⚠️ Proceeding anyway...`);
+                this.isReady = true;
+                this.status = 'ready';
+            }
         } else {
             console.warn(`[Session #${this.id}] Login Timed Out. ❌`);
             throw new Error('Login Timeout');
