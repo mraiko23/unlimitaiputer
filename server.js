@@ -74,51 +74,22 @@ class BrowserSession {
             const isProduction = process.env.NODE_ENV === 'production';
 
             this.browser = await puppeteer.launch({
-                headless: isProduction ? 'new' : false,
-                defaultViewport: { width: 1920, height: 1080 },
-                dumpio: false, // SILENCE! No more Chrome stderr spam.
+                headless: isProduction ? 'new' : false, // Headless on Render, Visible locally
+                defaultViewport: null,
                 executablePath,
                 ignoreDefaultArgs: ['--enable-automation'],
-                env: {
-                    ...process.env,
-                    // Silence DBus errors
-                    DBUS_SESSION_BUS_ADDRESS: '/dev/null'
-                },
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--start-maximized',
                     '--incognito',
-                    '--disable-blink-features=AutomationControlled',
-                    // Render/Headless optimizations
-                    '--disable-gpu',
-                    '--disable-software-rasterizer',
-                    '--enable-unsafe-swiftshader',
-                    '--no-first-run',
-                    '--disable-extensions',
-                    // Disable Google Features (GCM, Sync, etc)
-                    '--disable-background-networking',
-                    '--disable-sync',
-                    '--disable-translate',
-                    '--disable-default-apps',
-                    '--no-pings',
-                    '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,InterestFeedContentSuggestions',
-                    '--disable-client-side-phishing-detection',
-                    '--disable-component-extensions-with-background-pages',
-                    '--disable-dbus',
-                    '--disable-ipc-flooding-protection'
+                    '--disable-blink-features=AutomationControlled'
                 ]
             });
 
             const pages = await this.browser.pages();
             this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
-
-            // Custom Logger (Cleaner than dumpio)
-            this.page.on('console', msg => {
-                const text = msg.text();
-                if (text.includes('ANTIGRAVITY')) console.log(`[Browser #${this.id}] ${text}`);
-            });
 
             console.log(`[Session #${this.id}] Navigating to puter.com...`);
             await this.page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(e => console.log(`[Session #${this.id}] Nav warning:`, e.message));
@@ -139,101 +110,77 @@ class BrowserSession {
         for (let i = 0; i < 40; i++) { // 80 seconds max
             await new Promise(r => setTimeout(r, 2000));
 
-            // 1. Clicker Logic with Logging
+            // 1. Clicker Logic
             try {
-                const clicked = await this.page.evaluate(() => {
+                await this.page.evaluate(() => {
                     const buttons = Array.from(document.querySelectorAll('button, a'));
-                    // Log potential candidates
-                    const candidates = buttons.filter(b => b.innerText.match(/Get Started|Start|Guest|Try|Create/i)).map(b => b.innerText);
-                    if (candidates.length > 0) console.log('ANTIGRAVITY: Found buttons:', candidates);
-
-                    // Priority 1: "Get Started" or "Guest" (Standard)
-                    let target = buttons.find(b => b.innerText.match(/Get Started|Guest|Try Now/i) && b.offsetParent !== null);
-
-                    // Priority 2: "Create Free Account" (Render / Login Page)
-                    if (!target) {
-                        target = buttons.find(b => b.innerText.match(/Create Free Account/i) && b.offsetParent !== null);
-                    }
-
-                    // Priority 3: "Log In" ? No, stick to guest/free creation paths that lead to guest later
-
-                    if (target) {
-                        target.click();
-                        return target.innerText;
-                    }
-                    return null;
+                    const startBtn = buttons.find(b =>
+                        b.innerText.match(/Get Started|Start|Guest|Try/i) && b.offsetParent !== null
+                    );
+                    if (startBtn) startBtn.click();
                 });
-                if (clicked) console.log(`[Session #${this.id}] Clicked button: "${clicked}"`);
             } catch (e) { }
 
             // 2. Inject & Check
             await this.injectHelpers();
 
-            // Check Visual & API & Token
+            // Check Visual & API & TOKEN (all three required!)
             const status = await this.page.evaluate(() => {
                 const visual = window.checkLogin();
-                // We strictly need the token now
-                const hasToken = (typeof puter !== 'undefined' && (puter.authToken || puter.token));
                 const api = (typeof puter !== 'undefined' && !!puter.ai);
+                // CRITICAL: Check for actual token
+                const hasToken = (typeof puter !== 'undefined' && !!puter.authToken);
                 return { visual, api, hasToken };
             });
 
-            if (status.visual) {
-                if (status.api && status.hasToken) {
-                    loggedIn = true;
-                    break;
-                } else {
-                    console.log(`[Session #${this.id}] Visual OK, waiting for API/Token... (API: ${status.api}, Token: ${status.hasToken})`);
-                }
+            if (status.visual && status.api && status.hasToken) {
+                loggedIn = true;
+                break;
             }
 
-            // Reload if stuck
-            if (i === 15 && !status.visual) {
+            // Log progress
+            if (i % 5 === 0) {
+                console.log(`[Session #${this.id}] Waiting... (visual:${status.visual}, api:${status.api}, token:${status.hasToken})`);
+            }
+
+            // Reload if stuck without visual
+            if (i === 20 && !status.visual) {
                 console.log(`[Session #${this.id}] Stuck? Reloading...`);
                 await this.page.reload({ waitUntil: 'domcontentloaded' }).catch(() => { });
             }
         }
 
         if (loggedIn) {
-            // Extract and log token info
+            // Extract token using puter.authToken (the correct way)
             const tokenInfo = await this.page.evaluate(() => {
-                // TRY 1: Get directly from Puter object (Best)
                 let token = null;
-                if (typeof puter !== 'undefined') {
-                    token = puter.authToken || puter.token;
-                }
-
-                // TRY 2: LocalStorage fallback
-                if (!token) {
-                    token = localStorage.getItem('puter.auth.token') ||
-                        localStorage.getItem('token') ||
-                        localStorage.getItem('puter_token');
-                }
-
-                // Debug log in browser console
-                console.log('ANTIGRAVITY DEBUG: Found Token:', token);
-
-                const user = localStorage.getItem('puter.auth.user');
+                let user = 'Guest';
+                try {
+                    // Primary method: puter.authToken
+                    if (typeof puter !== 'undefined' && puter.authToken) {
+                        token = puter.authToken;
+                    }
+                    // Fallback: localStorage
+                    if (!token) {
+                        token = localStorage.getItem('puter.auth.token') || localStorage.getItem('token');
+                    }
+                    // Get user
+                    const userData = localStorage.getItem('puter.auth.user');
+                    if (userData) user = JSON.parse(userData).username || 'Guest';
+                } catch (e) { }
                 return {
                     hasToken: !!token,
-                    tokenPreview: token ? token.substring(0, 50) + '...' : null,
-                    user: user ? JSON.parse(user).username : 'Guest'
+                    tokenPreview: token ? token.substring(0, 30) + '...' : null,
+                    user
                 };
             });
             console.log(`[Session #${this.id}] READY! ✅`);
-            console.log(`[Session #${this.id}] User: ${tokenInfo.user}, Token: ${tokenInfo.hasToken ? tokenInfo.tokenPreview : 'NONE'}`);
+            console.log(`[Session #${this.id}] User: ${tokenInfo.user}`);
+            console.log(`[Session #${this.id}] Token: ${tokenInfo.hasToken ? tokenInfo.tokenPreview : '❌ NO TOKEN'}`);
             this.isReady = true;
             this.status = 'ready';
         } else {
             console.warn(`[Session #${this.id}] Login Timed Out. ❌`);
-
-            // Debug: What is on the page?
-            try {
-                const title = await this.page.title();
-                const body = await this.page.evaluate(() => document.body.innerText.substring(0, 200));
-                console.log(`[Session #${this.id}] TIMEOUT STATE - Title: "${title}", Content: "${body.replace(/\n/g, ' ')}..."`);
-            } catch (e) { }
-
             throw new Error('Login Timeout');
         }
     }
@@ -243,9 +190,9 @@ class BrowserSession {
         await this.page.evaluate(() => {
             window.puterReady = true;
             window.checkLogin = () => {
-                // Strict check for token
-                if (typeof puter !== 'undefined' && (puter.authToken || puter.token)) return true;
-                if (localStorage.getItem('puter.auth.token') || localStorage.getItem('token')) return true;
+                if (typeof puter !== 'undefined' && puter.ai) return true;
+                if (localStorage.getItem('puter.auth.token') || localStorage.getItem('token') || localStorage.getItem('puter_token')) return true;
+                if (document.querySelector('.taskbar') || document.querySelector('#desktop')) return true;
                 return false;
             };
             window.doChat = async (prompt, model) => {
@@ -376,6 +323,68 @@ const sessionPool = new SessionPool(1);
 app.get('/api/health', (req, res) => {
     const readyCount = sessionPool.pool.filter(s => s.isReady).length;
     res.json({ status: 'ok', readySessions: readyCount, totalSessions: sessionPool.pool.length });
+});
+
+// Debug endpoint - shows live browser screenshot
+app.get('/debug', async (req, res) => {
+    try {
+        const session = sessionPool.pool.find(s => s.page);
+        if (!session || !session.page) {
+            return res.send('<h1>No browser session available</h1>');
+        }
+
+        // Get token info
+        const tokenInfo = await session.page.evaluate(() => {
+            let token = null;
+            try {
+                if (typeof puter !== 'undefined' && puter.authToken) token = puter.authToken;
+                if (!token) token = localStorage.getItem('puter.auth.token');
+            } catch (e) { }
+            return {
+                hasToken: !!token,
+                tokenFull: token || 'NO TOKEN',
+                puterExists: typeof puter !== 'undefined',
+                puterAiExists: typeof puter !== 'undefined' && !!puter.ai
+            };
+        }).catch(() => ({ hasToken: false, tokenFull: 'ERROR', puterExists: false, puterAiExists: false }));
+
+        // Take screenshot
+        const screenshot = await session.page.screenshot({ encoding: 'base64', fullPage: false });
+
+        res.send(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Debug - Browser View</title>
+                <meta http-equiv="refresh" content="5">
+                <style>
+                    body { font-family: monospace; background: #1a1a2e; color: #0f0; padding: 20px; }
+                    img { max-width: 100%; border: 2px solid #0f0; margin-top: 10px; }
+                    .info { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
+                    .token { word-break: break-all; background: #0d1b2a; padding: 10px; border-radius: 4px; }
+                    h1 { color: #00ff88; }
+                    .status { color: ${session.isReady ? '#0f0' : '#f00'}; }
+                </style>
+            </head>
+            <body>
+                <h1>🔍 Debug View (Auto-refresh: 5s)</h1>
+                <div class="info">
+                    <p><b>Session ID:</b> #${session.id}</p>
+                    <p><b>Status:</b> <span class="status">${session.isReady ? 'READY ✅' : 'NOT READY ❌'}</span></p>
+                    <p><b>puter object:</b> ${tokenInfo.puterExists ? 'EXISTS' : 'MISSING'}</p>
+                    <p><b>puter.ai:</b> ${tokenInfo.puterAiExists ? 'EXISTS' : 'MISSING'}</p>
+                    <p><b>Has Token:</b> ${tokenInfo.hasToken ? 'YES ✅' : 'NO ❌'}</p>
+                    <p><b>puter.authToken:</b></p>
+                    <div class="token">${tokenInfo.tokenFull}</div>
+                </div>
+                <h2>📷 Live Screenshot:</h2>
+                <img src="data:image/png;base64,${screenshot}" alt="Browser Screenshot">
+            </body>
+            </html>
+        `);
+    } catch (e) {
+        res.status(500).send('<h1>Error: ' + e.message + '</h1>');
+    }
 });
 
 async function executeInSession(actionName, actionFn) {
