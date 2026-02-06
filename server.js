@@ -233,7 +233,40 @@ class BrowserSession {
                 if (typeof puter === 'undefined' || !puter.ai) {
                     throw new Error('Puter.ai not available');
                 }
-                return await puter.ai.txt2img(prompt, { model });
+                const result = await puter.ai.txt2img(prompt, { model });
+
+                // Debug Inspection
+                const debugInfo = {
+                    type: typeof result,
+                    constructor: result && result.constructor ? result.constructor.name : 'Unknown',
+                    isImgElement: result instanceof HTMLImageElement,
+                    isBlob: result instanceof Blob,
+                    keys: result ? Object.keys(result) : [],
+                    stringified: 'Error converting to string'
+                };
+                try { debugInfo.stringified = JSON.stringify(result); } catch (e) { }
+
+                // Puppeteer returns {} for DOM elements, so we must extract the src
+                if (result instanceof HTMLImageElement) {
+                    return { url: result.src, type: 'img_element', debug: debugInfo };
+                }
+                if (result instanceof Blob) {
+                    return await new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve({ url: reader.result, type: 'blob', debug: debugInfo });
+                        reader.readAsDataURL(result);
+                    });
+                }
+
+                // If it looks like an image element but instanceof failed (iframe context issues?)
+                if (result && result.tagName === 'IMG' && result.src) {
+                    return { url: result.src, type: 'img_element_ducktype', debug: debugInfo };
+                }
+
+                return {
+                    result: result instanceof HTMLImageElement || result instanceof Blob || (result && result.tagName === 'IMG') ? 'Captured' : 'Unknown',
+                    debug: debugInfo
+                };
             };
         });
     }
@@ -518,11 +551,48 @@ app.post('/api/chat', async (req, res) => {
 app.post('/api/image/generate', async (req, res) => {
     try {
         const { prompt, model } = req.body;
+        console.log(`[Image] Generating: "${prompt}" with model: ${model}`);
         const result = await executeInSession('Image', async (session) => {
-            return await session.page.evaluate(async (p, m) => window.doImage(p, m), prompt, model || 'black-forest-labs/FLUX.1-pro');
+            return await session.page.evaluate(async (p, m) => {
+                try {
+                    return await window.doImage(p, m);
+                } catch (err) {
+                    return { error: err.message, stack: err.stack };
+                }
+            }, prompt, model || 'black-forest-labs/FLUX.1.1-pro');
         });
-        res.json(result);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+
+        // Check if result is valid
+        if (result && (result.url || (result.result && result.result !== 'Unknown'))) {
+            console.log('[Image] Success (Puter):', JSON.stringify(result));
+            res.json(result);
+            return;
+        }
+
+        console.warn('[Image] Puter failed or returned empty. Falling back to Pollinations...');
+
+        // Fallback: Pollinations.ai
+        // URL format: https://image.pollinations.ai/prompt/{prompt}?model={model}&nologo=true
+        const safePrompt = encodeURIComponent(prompt);
+        // Map common models to Pollinations friendly names if needed
+        let pollModel = 'flux'; // Default to flux
+        if (model.includes('flux')) pollModel = 'flux';
+        else if (model.includes('gpt')) pollModel = 'gpt-image-1.5';
+        else if (model.includes('dalle')) pollModel = 'dall-e-3';
+
+        const pollUrl = `https://image.pollinations.ai/prompt/${safePrompt}?model=${pollModel}&nologo=true`;
+        console.log(`[Image] Fallback URL: ${pollUrl}`);
+
+        res.json({
+            url: pollUrl,
+            type: 'url_fallback',
+            source: 'pollinations'
+        });
+
+    } catch (e) {
+        console.error('[Image] API Error:', e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // Bind
