@@ -19,6 +19,7 @@ const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Keep-alive ping
 const PING_INTERVAL = 90 * 1000;
@@ -245,6 +246,24 @@ class BrowserSession {
             await this.browser.close().catch(() => { });
         }
     }
+    async injectToken(token) {
+        if (!this.page) return false;
+        try {
+            console.log(`[Session #${this.id}] Injecting manual token...`);
+            await this.page.evaluate((t) => {
+                localStorage.setItem('puter.auth.token', t);
+                localStorage.setItem('token', t);
+            }, token);
+
+            // Reload to apply
+            await this.page.reload({ waitUntil: 'domcontentloaded' });
+            await this.waitForLogin();
+            return true;
+        } catch (e) {
+            console.error(`[Session #${this.id}] Token injection failed:`, e.message);
+            return false;
+        }
+    }
 }
 
 class SessionPool {
@@ -333,6 +352,11 @@ class SessionPool {
         const next = this.pool.find(s => s.isReady);
         if (next) console.log(`[Pool] Switched to Session #${next.id} ✅`);
         else console.warn(`[Pool] Backup session not ready yet! ⚠️`);
+    }
+    async injectToken(token) {
+        console.log('[Pool] Injecting token into all sessions...');
+        const results = await Promise.all(this.pool.map(s => s.injectToken(token)));
+        return results.every(r => r === true);
     }
 }
 
@@ -438,6 +462,25 @@ async function executeInSession(actionName, actionFn) {
         throw e;
     }
 }
+
+app.post('/api/auth/token', async (req, res) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Token required' });
+
+    try {
+        const success = await sessionPool.injectToken(token);
+        res.json({ success });
+    } catch (e) {
+        console.error('[Auth] Error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Chat Management (Simple Store)
+app.get('/api/chats', (req, res) => res.json(chatStore.getAllChats()));
+app.post('/api/chats', (req, res) => {
+    res.status(201).json(chatStore.createChat(req.body.title, req.body.model));
+});
 
 app.post('/api/chat', async (req, res) => {
     try {
