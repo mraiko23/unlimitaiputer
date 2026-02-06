@@ -12,34 +12,6 @@ const puppeteer = require('puppeteer-core');
 const fs = require('fs');
 const chatStore = require('./chat-store');
 
-function findExecutable(dir) {
-    if (!fs.existsSync(dir)) return null;
-    try {
-        const stats = fs.statSync(dir);
-        if (!stats.isDirectory()) {
-            // Check if this file is the binary
-            if (dir.endsWith('chrome') || dir.endsWith('google-chrome') || dir.endsWith('chrome.exe')) return dir;
-            return null;
-        }
-
-        const files = fs.readdirSync(dir);
-        for (const file of files) {
-            const fullPath = path.join(dir, file);
-            // Skip suspicious folders to avoid infinite loops or permission issues
-            if (file === '.' || file === '..') continue;
-
-            const itemStats = fs.statSync(fullPath);
-            if (itemStats.isDirectory()) {
-                const found = findExecutable(fullPath);
-                if (found) return found;
-            } else if (file === 'chrome' || file === 'google-chrome' || file === 'chrome.exe') {
-                return fullPath;
-            }
-        }
-    } catch (e) { }
-    return null;
-}
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
@@ -77,37 +49,32 @@ class BrowserSession {
         try {
             let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
             if (!executablePath || !fs.existsSync(executablePath)) {
-                const searchDirs = [
-                    'C:\\Program Files\\Google\\Chrome\\Application',
-                    'C:\\Program Files (x86)\\Google\\Chrome\\Application',
-                    process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application',
-                    '/usr/bin',
-                    path.join(process.cwd(), '.cache', 'puppeteer')
+                const localPaths = [
+                    // Windows
+                    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+                    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+                    // Linux (Render, Ubuntu, etc)
+                    '/usr/bin/google-chrome',
+                    '/usr/bin/google-chrome-stable',
+                    '/usr/bin/chromium',
+                    '/usr/bin/chromium-browser',
+                    // macOS
+                    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
                 ];
-
-                for (const dir of searchDirs) {
-                    const found = findExecutable(dir);
-                    if (found) { executablePath = found; break; }
+                for (const p of localPaths) {
+                    if (fs.existsSync(p)) { executablePath = p; break; }
                 }
             }
 
             if (!executablePath) {
-                console.error(`[Session #${this.id}] ❌ CRITICAL: Chrome executable not found!`);
-                throw new Error('Chrome executable not found');
+                throw new Error('Chrome not found! Set PUPPETEER_EXECUTABLE_PATH env var.');
             }
 
-            console.log(`[Session #${this.id}] Path: ${executablePath}`);
-
-            // Fix permissions (important for Render/Linux)
-            if (process.platform !== 'win32') {
-                try {
-                    fs.chmodSync(executablePath, 0o755);
-                    console.log(`[Session #${this.id}] Permissions set to 755`);
-                } catch (e) { console.warn(`[Session #${this.id}] Failed to set permissions:`, e.message); }
-            }
+            // Use headless on Render (production)
+            const isProduction = process.env.NODE_ENV === 'production';
 
             this.browser = await puppeteer.launch({
-                headless: false,
+                headless: isProduction ? 'new' : false, // Headless on Render, Visible locally
                 defaultViewport: null,
                 executablePath,
                 ignoreDefaultArgs: ['--enable-automation'],
@@ -130,8 +97,8 @@ class BrowserSession {
             await this.waitForLogin();
 
         } catch (e) {
-            console.error(`[Session #${this.id}] 🛑 FATAL INIT ERROR:`, e.message);
-            await this.close();
+            console.error(`[Session #${this.id}] FATAL INIT ERROR:`, e.message);
+            this.close();
             throw e;
         }
     }
@@ -224,7 +191,8 @@ class SessionPool {
         this.size = size;
         this.pool = []; // Queue of Session objects
         this.counter = 0;
-        this.consecutiveFailures = 0;
+        this.failedAttempts = 0;
+        this.maxFailedAttempts = 10; // Stop trying after 10 consecutive failures
     }
 
     async init() {
@@ -239,8 +207,8 @@ class SessionPool {
     }
 
     async addSession() {
-        if (this.consecutiveFailures > 5) {
-            console.error('[Pool] 🚨 CIRCUIT BREAKER TRIGGERED: Too many init failures. Stopping retries.');
+        if (this.failedAttempts >= this.maxFailedAttempts) {
+            console.error('[Pool] Max failed attempts reached. Stopping session creation.');
             return null;
         }
 
@@ -248,20 +216,19 @@ class SessionPool {
         const s = new BrowserSession(this.counter);
         this.pool.push(s);
 
-        s.init()
-            .then(() => {
-                this.consecutiveFailures = 0; // Reset on success
-            })
-            .catch(e => {
-                this.consecutiveFailures++;
-                console.error(`[Pool] Session #${s.id} failed to init. Fail count: ${this.consecutiveFailures}`);
-                this.removeSession(s);
+        // Start init in background, but handle error by removing
+        s.init().then(() => {
+            this.failedAttempts = 0; // Reset on success
+        }).catch(e => {
+            console.error(`[Pool] Session #${s.id} failed to init. Removing.`);
+            this.removeSession(s);
+            this.failedAttempts++;
 
-                if (this.consecutiveFailures <= 5) {
-                    console.log('[Pool] Retrying in 10s...');
-                    setTimeout(() => this.addSession(), 10000);
-                }
-            });
+            // Only retry if under limit
+            if (this.failedAttempts < this.maxFailedAttempts) {
+                setTimeout(() => this.addSession(), 10000); // 10s delay between retries
+            }
+        });
 
         return s;
     }
