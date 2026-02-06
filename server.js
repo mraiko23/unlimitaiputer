@@ -187,7 +187,7 @@ class BrowserSession {
 }
 
 class SessionPool {
-    constructor(size = 2) {
+    constructor(size = 1) { // REDUCED: 1 browser for 512MB Render free tier
         this.size = size;
         this.pool = []; // Queue of Session objects
         this.counter = 0;
