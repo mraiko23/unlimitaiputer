@@ -75,7 +75,7 @@ class BrowserSession {
 
             this.browser = await puppeteer.launch({
                 headless: isProduction ? 'new' : false,
-                defaultViewport: null,
+                defaultViewport: { width: 1920, height: 1080 },
                 dumpio: true, // Show browser console logs in terminal
                 executablePath,
                 ignoreDefaultArgs: ['--enable-automation'],
@@ -118,15 +118,24 @@ class BrowserSession {
         for (let i = 0; i < 40; i++) { // 80 seconds max
             await new Promise(r => setTimeout(r, 2000));
 
-            // 1. Clicker Logic
+            // 1. Clicker Logic with Logging
             try {
-                await this.page.evaluate(() => {
+                const clicked = await this.page.evaluate(() => {
                     const buttons = Array.from(document.querySelectorAll('button, a'));
+                    // Log potential candidates
+                    const candidates = buttons.filter(b => b.innerText.match(/Get Started|Start|Guest|Try/i)).map(b => b.innerText);
+                    if (candidates.length > 0) console.log('ANTIGRAVITY: Found buttons:', candidates);
+
                     const startBtn = buttons.find(b =>
                         b.innerText.match(/Get Started|Start|Guest|Try/i) && b.offsetParent !== null
                     );
-                    if (startBtn) startBtn.click();
+                    if (startBtn) {
+                        startBtn.click();
+                        return startBtn.innerText;
+                    }
+                    return null;
                 });
+                if (clicked) console.log(`[Session #${this.id}] Clicked button: "${clicked}"`);
             } catch (e) { }
 
             // 2. Inject & Check
