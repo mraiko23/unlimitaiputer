@@ -10,8 +10,35 @@ const cors = require('cors');
 const path = require('path');
 const puppeteer = require('puppeteer-core');
 const fs = require('fs');
-const glob = { sync: (p) => { try { return fs.readdirSync(p); } catch (e) { return [] } } }; // Simple fallback or use a loop
 const chatStore = require('./chat-store');
+
+function findExecutable(dir) {
+    if (!fs.existsSync(dir)) return null;
+    try {
+        const stats = fs.statSync(dir);
+        if (!stats.isDirectory()) {
+            // Check if this file is the binary
+            if (dir.endsWith('chrome') || dir.endsWith('google-chrome') || dir.endsWith('chrome.exe')) return dir;
+            return null;
+        }
+
+        const files = fs.readdirSync(dir);
+        for (const file of files) {
+            const fullPath = path.join(dir, file);
+            // Skip suspicious folders to avoid infinite loops or permission issues
+            if (file === '.' || file === '..') continue;
+
+            const itemStats = fs.statSync(fullPath);
+            if (itemStats.isDirectory()) {
+                const found = findExecutable(fullPath);
+                if (found) return found;
+            } else if (file === 'chrome' || file === 'google-chrome' || file === 'chrome.exe') {
+                return fullPath;
+            }
+        }
+    } catch (e) { }
+    return null;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,31 +77,34 @@ class BrowserSession {
         try {
             let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
             if (!executablePath || !fs.existsSync(executablePath)) {
-                const localPaths = [
-                    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-                    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-                    'C:\\LocalAppDir\\Google\\Chrome\\Application\\chrome.exe',
-                    process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe',
-                    '/usr/bin/google-chrome',
-                    '/usr/bin/chromium',
-                    '/usr/bin/chromium-browser',
-                    // Render specific path (from build script cache)
-                    path.join(process.cwd(), '.cache', 'puppeteer', 'chrome', 'linux-119.0.6045.105', 'chrome-linux', 'chrome'),
-                    // Dynamic search in cache if version changes
-                    path.join(process.cwd(), '.cache', 'puppeteer', 'chrome')
+                const searchDirs = [
+                    'C:\\Program Files\\Google\\Chrome\\Application',
+                    'C:\\Program Files (x86)\\Google\\Chrome\\Application',
+                    process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application',
+                    '/usr/bin',
+                    path.join(process.cwd(), '.cache', 'puppeteer')
                 ];
-                for (const p of localPaths) {
-                    if (p && fs.existsSync(p)) { executablePath = p; break; }
+
+                for (const dir of searchDirs) {
+                    const found = findExecutable(dir);
+                    if (found) { executablePath = found; break; }
                 }
             }
 
             if (!executablePath) {
                 console.error(`[Session #${this.id}] ❌ CRITICAL: Chrome executable not found!`);
-                console.error(`[Session #${this.id}] Tried common paths but all failed. Please set PUPPETEER_EXECUTABLE_PATH.`);
                 throw new Error('Chrome executable not found');
             }
 
             console.log(`[Session #${this.id}] Path: ${executablePath}`);
+
+            // Fix permissions (important for Render/Linux)
+            if (process.platform !== 'win32') {
+                try {
+                    fs.chmodSync(executablePath, 0o755);
+                    console.log(`[Session #${this.id}] Permissions set to 755`);
+                } catch (e) { console.warn(`[Session #${this.id}] Failed to set permissions:`, e.message); }
+            }
 
             this.browser = await puppeteer.launch({
                 headless: false,
