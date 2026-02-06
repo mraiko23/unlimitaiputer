@@ -6,6 +6,7 @@
 
 const express = require('express');
 const cors = require('cors');
+const puppeteerCore = require('puppeteer');
 const path = require('path');
 const { connect } = require('puppeteer-real-browser');
 const fs = require('fs');
@@ -49,16 +50,27 @@ class BrowserSession {
         try {
             const isProduction = process.env.NODE_ENV === 'production';
 
-            // On Render, use the system Chrome if available
-            const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
-            if (executablePath) console.log(`[Session #${this.id}] Using custom executable: ${executablePath}`);
+            // On Render, let standard Puppeteer find the downloaded Chrome
+            // We added 'puppeteer' to package.json so it downloads a compatible binary
+            let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+
+            if (!executablePath) {
+                try {
+                    executablePath = puppeteerCore.executablePath();
+                    console.log(`[Session #${this.id}] Resolved Chrome path via puppeteer: ${executablePath}`);
+                } catch (e) {
+                    console.log(`[Session #${this.id}] Could not resolve puppeteer path:`, e.message);
+                }
+            }
+
+            if (executablePath) console.log(`[Session #${this.id}] Using executable: ${executablePath}`);
 
             // Use puppeteer-real-browser with Turnstile auto-solve
             const response = await connect({
                 headless: 'auto', // Auto detects need for Xvfb/Invisible
                 turnstile: true, // AUTO-SOLVE Cloudflare Turnstile!
                 customConfig: {
-                    chromePath: executablePath // Use Render's chrome if set
+                    chromePath: executablePath // Pass the found path to real-browser
                 },
                 connectOption: {
                     defaultViewport: { width: 1280, height: 720 }

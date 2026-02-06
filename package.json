@@ -9,6 +9,7 @@
     "dependencies": {
         "cors": "^2.8.5",
         "express": "^4.18.2",
+        "puppeteer": "^23.0.0",
         "puppeteer-real-browser": "^1.4.4",
         "uuid": "^9.0.0"
     },
