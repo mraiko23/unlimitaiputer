@@ -1,8 +1,9 @@
 // Features:
-// - Dual-Browser Failover (Primary/Standby) to bypass limits and ensure uptime
-// - strict Memory Management (Kill & Replace strategy)
+// - Memory-Efficient Single-Browser System (Optimized for 512MB RAM)
+// - Strict Memory Management (Kill & Replace strategy)
 // - Cloudflare Bypass (puppeteer-real-browser)
 // - Full AI Suite: Chat, Search, Image (Txt2Img/Img2Img), TTS, STT
+// - Session Locking & Reference Counting to prevent protocol errors
 
 const express = require('express');
 const cors = require('cors');
@@ -458,21 +459,14 @@ app.post('/api/video/generate', async (req, res) => {
 class SessionPool {
     constructor() {
         this.primary = null;
-        this.standby = null;
         this.sessionCounter = 0;
         this.tokenCache = null;
-        this.isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
-        this.init();
+        // init() is called explicitly during app.listen
     }
 
     async init() {
-        console.log(`[Pool] Initializing... (Mode: ${this.isProduction ? 'Production/Single-Browser' : 'Dual-Browser'})`);
+        console.log('[Pool] Initializing Single-Browser System...');
         this.primary = await this.createSession('primary');
-
-        // Disable Standby in production to save ~200MB RAM
-        if (!this.isProduction) {
-            this.standby = await this.createSession('standby');
-        }
     }
 
     async createSession(type) {
@@ -497,63 +491,31 @@ class SessionPool {
         if (!token || token === this.tokenCache) return;
         this.tokenCache = token;
 
-        // Sync to other session if alive
+        // Sync to primary if alive
         if (this.primary && this.primary.isReady && this.primary.token !== token) {
             this.primary.injectToken(token);
-        }
-        if (this.standby && this.standby.isReady && this.standby.token !== token) {
-            this.standby.injectToken(token);
         }
     }
 
     async getSession() {
-        // Always prefer Primary
         if (this.primary && this.primary.isReady) return this.primary;
-
-        // If Primary dead, check Standby
-        if (this.standby && this.standby.isReady) {
-            console.warn('[Pool] Primary unavailable, promoting Standby...');
-            await this.promoteStandby();
-            return this.primary;
-        }
-
-        throw new Error('No active sessions available. System is initializing.');
-    }
-
-    async promoteStandby() {
-        // Move Standby to Primary
-        const oldPrimary = this.primary;
-        this.primary = this.standby;
-        this.standby = null;
-        this.primary.type = 'primary';
-
-        // Kill old Primary -> RETIRE instead of close
-        if (oldPrimary) {
-            // oldPrimary.close(); 
-            oldPrimary.retire();
-        }
-
-        // Disable Standby in production to save ~200MB RAM
-        if (!this.isProduction) {
-            console.log('[Pool] Spawning new Standby...');
-            this.standby = await this.createSession('standby');
-        } else {
-            console.log('[Pool] Production Mode: Skipping Standby replacement.');
-        }
+        throw new Error('Active session unavailable. System is initializing.');
     }
 
     async forceRotate() {
         console.warn('[Pool] ⚠️ FORCE ROTATION TRIGGERED (Limit/Error) ⚠️');
-        // This is called when Primary fails/hits limit
-        if (this.standby && this.standby.isReady) {
-            await this.promoteStandby();
-            return this.primary;
-        } else {
-            console.error('[Pool] Cannot rotate! Standby not ready. Restarting Primary...');
-            if (this.primary) await this.primary.close(); // Hard restart if no standby
-            this.primary = await this.createSession('primary');
-            return this.primary;
+        console.error('[Pool] Restarting Primary Browser...');
+        if (this.primary) await this.primary.close();
+        this.primary = await this.createSession('primary');
+
+        // Wait for it to be ready or timeout
+        let count = 0;
+        while (!this.primary.isReady && count < 30) {
+            await new Promise(r => setTimeout(r, 2000));
+            count++;
         }
+
+        return this.primary;
     }
 }
 
@@ -759,14 +721,13 @@ app.post('/api/tool/stt', async (req, res) => {
 app.get('/api/health', (req, res) => {
     res.json({
         primary: pool.primary?.isReady,
-        standby: pool.standby?.isReady,
-        browser_count: (pool.primary ? 1 : 0) + (pool.standby ? 1 : 0)
+        id: pool.primary?.id,
+        active: pool.primary?.activeRequests
     });
 });
 
 app.get('/debug', async (req, res) => {
-    // Generate simple debug view of both browsers
-    let html = '<html><body style="background:#222;color:#0f0;font-family:monospace;"><h1>Dual-Browser Status</h1>';
+    let html = '<html><body style="background:#222;color:#0f0;font-family:monospace;"><h1>Browser Status</h1>';
 
     const getSessInfo = async (s, name) => {
         if (!s) return `<h2>${name}: NULL</h2>`;
@@ -778,7 +739,7 @@ app.get('/debug', async (req, res) => {
         return `
             <div style="border:1px solid #555; padding:10px; margin:10px;">
                 <h2>${name} (ID: ${s.id})</h2>
-                <p>Status: ${s.status} | Ready: ${s.isReady}</p>
+                <p>Status: ${s.status} | Ready: ${s.isReady} | Active Req: ${s.activeRequests}</p>
                 <p>Created: ${new Date(s.createdAt).toISOString()}</p>
                 ${shot ? `<img src="data:image/webp;base64,${shot}" style="max-width:400px;border:1px solid #fff;">` : '<p>No Screenshot</p>'}
             </div>
@@ -786,7 +747,6 @@ app.get('/debug', async (req, res) => {
     };
 
     html += await getSessInfo(pool.primary, 'PRIMARY');
-    html += await getSessInfo(pool.standby, 'STANDBY');
     html += '</body></html>';
     res.send(html);
 });
