@@ -97,8 +97,12 @@ class BrowserSession {
             this.page.on('request', (request) => {
                 const headers = request.headers();
                 if (headers['authorization'] && headers['authorization'].startsWith('Bearer ')) {
-                    this.capturedToken = headers['authorization'].replace('Bearer ', '');
-                    console.log(`[Session #${this.id}] 🔑 TOKEN CAPTURED: ${this.capturedToken.substring(0, 30)}...`);
+                    const token = headers['authorization'].replace('Bearer ', '');
+                    // Only save valid JWT tokens (start with eyJ)
+                    if (token && token.startsWith('eyJ') && token.length > 50) {
+                        this.capturedToken = token;
+                        console.log(`[Session #${this.id}] 🔑 TOKEN CAPTURED: ${token.substring(0, 40)}...`);
+                    }
                 }
                 request.continue();
             });
@@ -161,9 +165,31 @@ class BrowserSession {
             // Wait for token to be captured from network requests
             console.log(`[Session #${this.id}] API detected, waiting for token capture...`);
 
-            for (let t = 0; t < 15; t++) { // Wait up to 30 seconds for token
+            // Trigger an API call to force token generation
+            try {
+                await this.page.evaluate(() => {
+                    if (typeof puter !== 'undefined' && puter.ai) {
+                        puter.ai.chat('test', { model: 'gemini-2.0-flash' }).catch(() => { });
+                    }
+                });
+            } catch (e) { }
+
+            for (let t = 0; t < 10; t++) { // 10 checks, 10 sec each = 100 sec max
                 if (this.capturedToken) break;
-                await new Promise(r => setTimeout(r, 2000));
+                console.log(`[Session #${this.id}] Waiting for token... (${t + 1}/10)`);
+                await new Promise(r => setTimeout(r, 10000));
+
+                // Try triggering another API call
+                if (t === 3 || t === 6) {
+                    console.log(`[Session #${this.id}] Triggering API call to force token...`);
+                    try {
+                        await this.page.evaluate(() => {
+                            if (typeof puter !== 'undefined' && puter.ai) {
+                                puter.ai.chat('hello', { model: 'gemini-2.0-flash' }).catch(() => { });
+                            }
+                        });
+                    } catch (e) { }
+                }
             }
 
             if (this.capturedToken) {
@@ -172,9 +198,8 @@ class BrowserSession {
                 this.isReady = true;
                 this.status = 'ready';
             } else {
-                console.warn(`[Session #${this.id}] Token not captured. ⚠️ Proceeding anyway...`);
-                this.isReady = true;
-                this.status = 'ready';
+                console.warn(`[Session #${this.id}] Token not captured after 100s. ⚠️ Restarting...`);
+                throw new Error('Token not captured');
             }
         } else {
             console.warn(`[Session #${this.id}] Login Timed Out. ❌`);
