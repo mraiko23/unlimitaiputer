@@ -57,14 +57,19 @@ class BrowserSession {
             if (!executablePath) {
                 try {
                     executablePath = puppeteerCore.executablePath();
-                    // Ensure absolute path because chrome-launcher fails with relative paths
-                    if (executablePath && !path.isAbsolute(executablePath)) {
-                        executablePath = path.resolve(process.cwd(), executablePath);
-                    }
                     console.log(`[Session #${this.id}] Resolved Chrome path via puppeteer: ${executablePath}`);
                 } catch (e) {
                     console.log(`[Session #${this.id}] Could not resolve puppeteer path:`, e.message);
                 }
+            }
+
+            // ALWAYS ensure absolute path, regardless of source
+            if (executablePath && !path.isAbsolute(executablePath)) {
+                executablePath = path.resolve(process.cwd(), executablePath);
+            }
+            // Check if file exists
+            if (executablePath && !fs.existsSync(executablePath)) {
+                console.log(`[Session #${this.id}] ⚠️ WARNING: Browser executable not found at: ${executablePath}`);
             }
 
             if (executablePath) {
