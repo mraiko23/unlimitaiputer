@@ -85,7 +85,14 @@ class BrowserSession {
                     '--disable-dev-shm-usage',
                     '--start-maximized',
                     '--incognito',
-                    '--disable-blink-features=AutomationControlled'
+                    '--disable-blink-features=AutomationControlled',
+                    // Render/Headless optimizations
+                    '--disable-gpu',
+                    '--disable-software-rasterizer',
+                    '--enable-unsafe-swiftshader',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-extensions'
                 ]
             });
 
@@ -182,6 +189,14 @@ class BrowserSession {
             this.status = 'ready';
         } else {
             console.warn(`[Session #${this.id}] Login Timed Out. ❌`);
+
+            // Debug: What is on the page?
+            try {
+                const title = await this.page.title();
+                const body = await this.page.evaluate(() => document.body.innerText.substring(0, 200));
+                console.log(`[Session #${this.id}] TIMEOUT STATE - Title: "${title}", Content: "${body.replace(/\n/g, ' ')}..."`);
+            } catch (e) { }
+
             throw new Error('Login Timeout');
         }
     }
