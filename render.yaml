@@ -4,10 +4,11 @@ services:
     runtime: node
     region: frankfurt
     plan: free
-    buildCommand: npm install && npx puppeteer-real-browser-install
+    buildCommand: npm install && npm install puppeteer-real-browser
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: DISPLAY
         value: ":99"
+
