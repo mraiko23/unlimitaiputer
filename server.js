@@ -91,6 +91,18 @@ class BrowserSession {
             const pages = await this.browser.pages();
             this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
 
+            // Intercept network requests to capture Authorization token
+            this.capturedToken = null;
+            await this.page.setRequestInterception(true);
+            this.page.on('request', (request) => {
+                const headers = request.headers();
+                if (headers['authorization'] && headers['authorization'].startsWith('Bearer ')) {
+                    this.capturedToken = headers['authorization'].replace('Bearer ', '');
+                    console.log(`[Session #${this.id}] 🔑 TOKEN CAPTURED: ${this.capturedToken.substring(0, 30)}...`);
+                }
+                request.continue();
+            });
+
             console.log(`[Session #${this.id}] Navigating to puter.com...`);
             await this.page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(e => console.log(`[Session #${this.id}] Nav warning:`, e.message));
 
