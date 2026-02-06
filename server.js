@@ -1,8 +1,8 @@
-/**
- * Puter AI API Server
- * Strategy: Zero-Downtime Session Pool with Cloudflare Bypass
- * Uses puppeteer-real-browser for automatic Turnstile CAPTCHA solving
- */
+// Features:
+// - Dual-Browser Failover (Primary/Standby) to bypass limits and ensure uptime
+// - strict Memory Management (Kill & Replace strategy)
+// - Cloudflare Bypass (puppeteer-real-browser)
+// - Full AI Suite: Chat, Search, Image (Txt2Img/Img2Img), TTS, STT
 
 const express = require('express');
 const cors = require('cors');
@@ -10,7 +10,22 @@ const puppeteerCore = require('puppeteer');
 const path = require('path');
 const { connect } = require('puppeteer-real-browser');
 const fs = require('fs');
-const chatStore = require('./chat-store');
+
+// Simple In-Memory Chat Store (Inlined)
+const chatStore = {
+    chats: [],
+    getAllChats: function () { return this.chats; },
+    createChat: function (title, model) {
+        const chat = {
+            id: Date.now().toString(),
+            title: title || 'New Chat',
+            model: model || 'gemini-2.0-flash',
+            createdAt: new Date().toISOString()
+        };
+        this.chats.push(chat);
+        return chat;
+    }
+};
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,8 +33,18 @@ const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '50mb' })); // Increased for image/audio uploads
 app.use(express.static(path.join(__dirname, 'public')));
+
+// PREVENT CRASHES: Global Error Handlers
+process.on('uncaughtException', (err) => {
+    console.error('[CRITICAL] Uncaught Exception:', err);
+    // Keep running
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[CRITICAL] Unhandled Rejection:', reason);
+    // Keep running
+});
 
 // Keep-alive ping
 const PING_INTERVAL = 90 * 1000;
@@ -34,239 +59,345 @@ function startKeepAlive() {
 }
 
 // =====================
-// Session Manager
+// Browser Session Class
 // =====================
 
 class BrowserSession {
-    constructor(id) {
+    constructor(id, type = 'standby') {
         this.id = id;
+        this.type = type; // 'primary' or 'standby'
         this.browser = null;
         this.page = null;
         this.isReady = false;
         this.status = 'initializing';
+        this.createdAt = Date.now();
+        this.token = null;
+        this.activeRequests = 0; // Reference counting
     }
 
-    async init() {
-        console.log(`[Session #${this.id}] Launching with puppeteer-real-browser...`);
-        try {
-            const isProduction = process.env.NODE_ENV === 'production';
+    async init(existingToken = null) {
+        console.log(`[Session #${this.id}] Launching (${this.type})...`);
+        const maxRetries = 3;
 
-            // On Render, let standard Puppeteer find the downloaded Chrome
-            // We added 'puppeteer' to package.json so it downloads a compatible binary
-            let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
 
-            if (!executablePath) {
-                try {
-                    executablePath = puppeteerCore.executablePath();
-                    // Ensure absolute path because chrome-launcher fails with relative paths
-                    if (executablePath && !path.isAbsolute(executablePath)) {
-                        executablePath = path.resolve(process.cwd(), executablePath);
-                    }
-                    console.log(`[Session #${this.id}] Resolved Chrome path via puppeteer: ${executablePath}`);
-                } catch (e) {
-                    console.log(`[Session #${this.id}] Could not resolve puppeteer path:`, e.message);
+                if (!executablePath) {
+                    try {
+                        executablePath = puppeteerCore.executablePath();
+                        if (executablePath && !path.isAbsolute(executablePath)) {
+                            executablePath = path.resolve(process.cwd(), executablePath);
+                        }
+                    } catch (e) { }
                 }
-            }
 
-            if (executablePath) {
-                console.log(`[Session #${this.id}] Using executable: ${executablePath}`);
-                process.env.CHROME_PATH = executablePath;
-            }
 
-            // Use puppeteer-real-browser with Turnstile auto-solve
-            const response = await connect({
-                headless: 'auto', // Auto detects need for Xvfb/Invisible
-                turnstile: true, // AUTO-SOLVE Cloudflare Turnstile!
-                customConfig: {
-                    chromePath: executablePath // Pass the found path to real-browser
-                },
-                connectOption: {
-                    defaultViewport: { width: 1280, height: 720 }
-                },
-                args: [
+                const launchArgs = [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--incognito'
-                ],
-                customConfig: {},
-                skipTarget: [],
-                fingerprint: true,
-                turnstileOptimization: true
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-gpu',
+                    '--disable-speech-api',
+                    '--disable-background-networking',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-breakpad',
+                    '--disable-component-update',
+                    '--disable-domain-reliability',
+                    // '--disable-extensions', // Kills rebrowser
+                    '--disable-features=AudioServiceOutOfProcess',
+                    '--disable-hang-monitor',
+                    '--disable-ipc-flooding-protection',
+                    '--disable-notifications',
+                    '--disable-offer-store-unmasked-wallet-cards',
+                    '--disable-popup-blocking',
+                    '--disable-print-preview',
+                    '--disable-prompt-on-repost',
+                    '--disable-renderer-backgrounding',
+                    '--disable-software-rasterizer',
+                    '--disable-sync',
+                    '--hide-scrollbars',
+                    '--ignore-gpu-blacklist',
+                    '--metrics-recording-only',
+                    '--mute-audio',
+                    '--no-default-browser-check',
+                    '--no-first-run',
+                    '--no-pings',
+                    '--no-zygote',
+                    '--password-store=basic',
+                    '--use-gl=swiftshader',
+                    '--use-mock-keychain',
+                    '--window-position=-10000,-10000'
+                ];
+
+                const response = await connect({
+                    headless: 'auto',
+                    turnstile: true,
+                    customConfig: { chromePath: executablePath },
+                    connectOption: {
+                        defaultViewport: null,
+                        timeout: 60000
+                    },
+                    args: launchArgs,
+                    fingerprint: true,
+                    turnstileOptimization: true
+                });
+
+                this.browser = response.browser;
+                this.page = response.page;
+
+                console.log(`[Session #${this.id}] Browser launched!`);
+
+                await this.page.goto('https://puter.com', {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 60000
+                });
+
+                // If we have a token from the other browser, inject it immediately!
+                if (existingToken) {
+                    console.log(`[Session #${this.id}] Injecting inherited token...`);
+                    await this.injectToken(existingToken);
+                }
+
+                await this.waitForLogin();
+
+                // OPTIMIZATION: Block heavy resources AFTER login to save RAM
+                await this.optimizePage();
+
+                // If successful, break retry loop
+                return;
+
+            } catch (e) {
+                console.error(`[Session #${this.id}] Init Attempt ${attempt}/${maxRetries} Failed: ${e.message}`);
+
+                // Cleanup partial
+                if (this.browser) await this.browser.close().catch(() => { });
+                this.browser = null;
+                this.page = null;
+
+                if (attempt === maxRetries) {
+                    this.status = 'dead';
+                    throw e; // Give up
+                }
+
+                // Wait before retry (exponential backoff)
+                await new Promise(r => setTimeout(r, attempt * 5000));
+            }
+        }
+    }
+
+
+    async optimizePage() {
+        if (!this.page) return;
+        try {
+            console.log(`[Session #${this.id}] Enabling resource blocker (Save RAM Mode)...`);
+            // NOTE: setRequestInterception can conflict with some puppeteer-real-browser patches or cloudflare
+            // We will rely on launch args for now to be safe.
+            /*
+            await this.page.setRequestInterception(true);
+            this.page.on('request', (req) => {
+                const type = req.resourceType();
+                if (['image', 'media', 'font', 'stylesheet', 'other'].includes(type)) {
+                    req.abort();
+                } else {
+                    req.continue();
+                }
             });
-
-            this.browser = response.browser;
-            this.page = response.page;
-
-            console.log(`[Session #${this.id}] Browser launched! Turnstile auto-solve enabled.`);
-            console.log(`[Session #${this.id}] Navigating to puter.com...`);
-
-            await this.page.goto('https://puter.com', {
-                waitUntil: 'domcontentloaded',
-                timeout: 120000
-            }).catch(e => console.log(`[Session #${this.id}] Nav warning:`, e.message));
-
-            await this.waitForLogin();
-
+            */
+            // Alternative: Use CDP to block URLs safely
+            const client = await this.page.target().createCDPSession();
+            await client.send('Network.setBlockedURLs', {
+                urls: ['*.png', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.woff', '*.woff2', '*.ttf']
+            });
         } catch (e) {
-            console.error(`[Session #${this.id}] FATAL INIT ERROR:`, e.message);
-            this.close();
-            throw e;
+            console.warn(`[Session #${this.id}] Optimization warning: ${e.message}`);
         }
     }
 
     async waitForLogin() {
-        console.log(`[Session #${this.id}] Waiting for Guest Login (Turnstile auto-solve enabled)...`);
+        console.log(`[Session #${this.id}] Waiting for Login...`);
         let loggedIn = false;
 
-        // puppeteer-real-browser handles Turnstile automatically with turnstile:true
-        // We just need to wait for login and click "Get Started" if needed
-
-        for (let i = 0; i < 90; i++) { // 180 seconds max (3 min for captcha solving)
+        for (let i = 0; i < 60; i++) { // 120 seconds max
             await new Promise(r => setTimeout(r, 2000));
 
-            // Log captcha status for debugging
-            if (i % 10 === 0) {
-                const frames = await this.page.frames();
-                const cfFrame = frames.find(f => f.url().includes('challenges.cloudflare.com'));
-                if (cfFrame) {
-                    console.log(`[Session #${this.id}] � Captcha frame detected, auto-solving in progress...`);
-                }
-            }
-
-            // Click "Get Started" button if present
+            // Auto-click "Get Started"
             try {
                 await this.page.evaluate(() => {
                     const buttons = Array.from(document.querySelectorAll('button, a'));
-                    const startBtn = buttons.find(b =>
-                        b.innerText.match(/Get Started|Start|Guest|Try|Continue/i) && b.offsetParent !== null
-                    );
+                    const startBtn = buttons.find(b => b.innerText.match(/Get Started|Start|Guest|Try/i));
                     if (startBtn) startBtn.click();
                 });
             } catch (e) { }
 
-            // Inject helpers & check login status
             await this.injectHelpers();
 
-            // Check Visual & API & TOKEN (all three required!)
-            const status = await this.page.evaluate(() => {
-                const visual = window.checkLogin();
-                const api = (typeof puter !== 'undefined' && !!puter.ai);
-                // CRITICAL: Check for actual token
-                const hasToken = (typeof puter !== 'undefined' && !!puter.authToken);
-                return { visual, api, hasToken };
-            });
-
-            if (status.visual && status.api && status.hasToken) {
+            // Check Status
+            const state = await this.getPageStatus();
+            if (state.api && state.token) {
+                this.token = state.token;
                 loggedIn = true;
                 break;
-            }
-
-            // Log progress
-            if (i % 5 === 0) {
-                console.log(`[Session #${this.id}] Waiting... (visual:${status.visual}, api:${status.api}, token:${status.hasToken})`);
-            }
-
-            // Reload if stuck without visual
-            if (i === 20 && !status.visual) {
-                console.log(`[Session #${this.id}] Stuck? Reloading...`);
-                await this.page.reload({ waitUntil: 'domcontentloaded' }).catch(() => { });
             }
         }
 
         if (loggedIn) {
-            // Extract token using puter.authToken (the correct way)
-            const tokenInfo = await this.page.evaluate(() => {
-                let token = null;
-                let user = 'Guest';
-                try {
-                    // Primary method: puter.authToken
-                    if (typeof puter !== 'undefined' && puter.authToken) {
-                        token = puter.authToken;
-                    }
-                    // Fallback: localStorage
-                    if (!token) {
-                        token = localStorage.getItem('puter.auth.token') || localStorage.getItem('token');
-                    }
-                    // Get user
-                    const userData = localStorage.getItem('puter.auth.user');
-                    if (userData) user = JSON.parse(userData).username || 'Guest';
-                } catch (e) { }
-                return {
-                    hasToken: !!token,
-                    tokenPreview: token ? token.substring(0, 30) + '...' : null,
-                    user
-                };
-            });
-            console.log(`[Session #${this.id}] READY! ✅`);
-            console.log(`[Session #${this.id}] User: ${tokenInfo.user}`);
-            console.log(`[Session #${this.id}] Token: ${tokenInfo.hasToken ? tokenInfo.tokenPreview : '❌ NO TOKEN'}`);
+            console.log(`[Session #${this.id}] READY! ✅ Token captured: ${this.token}`);
             this.isReady = true;
             this.status = 'ready';
         } else {
-            console.warn(`[Session #${this.id}] Login Timed Out. ❌`);
+            console.warn(`[Session #${this.id}] Login Timeout.`);
             throw new Error('Login Timeout');
         }
+    }
+
+    async getPageStatus() {
+        if (!this.page) return { api: false, token: null };
+        try {
+            return await this.page.evaluate(() => {
+                let token = null;
+                if (typeof puter !== 'undefined' && puter.authToken) token = puter.authToken;
+                if (!token) token = localStorage.getItem('puter.auth.token');
+
+                return {
+                    api: typeof puter !== 'undefined' && !!puter.ai,
+                    token: token
+                };
+            });
+        } catch (e) { return { api: false, token: null }; }
     }
 
     async injectHelpers() {
         if (!this.page) return;
         await this.page.evaluate(() => {
             window.puterReady = true;
-            window.checkLogin = () => {
-                if (typeof puter !== 'undefined' && puter.ai) return true;
-                if (localStorage.getItem('puter.auth.token') || localStorage.getItem('token') || localStorage.getItem('puter_token')) return true;
-                if (document.querySelector('.taskbar') || document.querySelector('#desktop')) return true;
-                return false;
-            };
+
+            // Chat Wrapper
             window.doChat = async (prompt, model) => {
-                if (typeof puter === 'undefined' || !puter.ai) {
-                    throw new Error('Puter.ai not available. Token: ' + (localStorage.getItem('puter.auth.token') ? 'exists' : 'missing'));
-                }
+                if (!puter?.ai) throw new Error('Puter AI not ready');
+                return await puter.ai.chat(prompt, { model });
+            };
+
+            // Image Wrapper (Txt2Img & Img2Img)
+            window.doImage = async (prompt, model, inputImage) => {
                 try {
-                    return await puter.ai.chat(prompt, { model });
+                    if (!puter?.ai) throw new Error('Puter AI not ready');
+                    const options = { model, prompt }; // Add prompt to options for redundancy
+
+                    if (inputImage) {
+                        options.input_image = inputImage;
+                    }
+
+                    const result = await puter.ai.txt2img(prompt, options);
+
+                    // Check for HTMLImageElement by tag name and properties since instanceof might be flaky in Puppeteer context
+                    if (result && (result instanceof HTMLImageElement || result.tagName === 'IMG')) {
+                        return result.src;
+                    }
+                    if (typeof result === 'string') return result; // URL
+                    if (result instanceof Blob) {
+                        return await new Promise(r => {
+                            const reader = new FileReader();
+                            reader.onload = () => r(reader.result);
+                            reader.readAsDataURL(result);
+                        });
+                    }
+                    return result;
                 } catch (e) {
-                    throw new Error('Chat error: ' + e.message);
+                    throw new Error(e.message || JSON.stringify(e));
                 }
             };
-            window.doImage = async (prompt, model) => {
-                if (typeof puter === 'undefined' || !puter.ai) {
-                    throw new Error('Puter.ai not available');
-                }
-                const result = await puter.ai.txt2img(prompt, { model });
 
-                // Debug Inspection
-                const debugInfo = {
-                    type: typeof result,
-                    constructor: result && result.constructor ? result.constructor.name : 'Unknown',
-                    isImgElement: result instanceof HTMLImageElement,
-                    isBlob: result instanceof Blob,
-                    keys: result ? Object.keys(result) : [],
-                    stringified: 'Error converting to string'
-                };
-                try { debugInfo.stringified = JSON.stringify(result); } catch (e) { }
+            // Search Wrapper (Perplexity)
+            window.doSearch = async (prompt) => {
+                if (!puter?.ai) throw new Error('Puter AI not ready');
+                // Using Perplexity Sonar for search
+                return await puter.ai.chat(prompt, { model: 'perplexity/sonar' });
+            };
 
-                // Puppeteer returns {} for DOM elements, so we must extract the src
-                if (result instanceof HTMLImageElement) {
-                    return { url: result.src, type: 'img_element', debug: debugInfo };
-                }
-                if (result instanceof Blob) {
-                    return await new Promise((resolve) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => resolve({ url: reader.result, type: 'blob', debug: debugInfo });
-                        reader.readAsDataURL(result);
+            // Text-to-Speech Wrapper
+            window.doTTS = async (text, voice) => {
+                try {
+                    if (!puter?.ai) throw new Error('Puter AI not ready');
+                    // Docs say puter.ai.txt2speech(text, options)
+                    const result = await puter.ai.txt2speech(text, {
+                        provider: 'elevenlabs',
+                        voice: voice || '21m00Tcm4TlvDq8ikWAM',
+                        model: 'eleven_multilingual_v2'
                     });
-                }
 
-                // If it looks like an image element but instanceof failed (iframe context issues?)
-                if (result && result.tagName === 'IMG' && result.src) {
-                    return { url: result.src, type: 'img_element_ducktype', debug: debugInfo };
-                }
+                    if (result && (result instanceof HTMLAudioElement || result.tagName === 'AUDIO')) {
+                        return result.src; // This is usually a Blob URL or Remote URL
+                    }
 
-                return {
-                    result: result instanceof HTMLImageElement || result instanceof Blob || (result && result.tagName === 'IMG') ? 'Captured' : 'Unknown',
-                    debug: debugInfo
-                };
+                    if (result instanceof Blob) {
+                        return await new Promise(r => {
+                            const reader = new FileReader();
+                            reader.onload = () => r(reader.result);
+                            reader.readAsDataURL(result);
+                        });
+                    }
+                    return result; // fallback
+                } catch (e) {
+                    throw new Error(e.message || JSON.stringify(e));
+                }
+            };
+
+            // Speech-to-Text Wrapper (Filesystem Approach)
+            window.doSTT = async (audioDataVal) => {
+                try {
+                    if (!puter?.ai) throw new Error('Puter AI not ready');
+
+                    // Convert Data URI to Blob
+                    const response = await fetch(audioDataVal);
+                    const originalBlob = await response.blob();
+
+                    // Reconstruct blob with MP3 mime type (spoofing for the backend)
+                    const blob = new Blob([originalBlob], { type: 'audio/mpeg' });
+
+                    // Generate temp filename with .mp3 extension
+                    const filename = `~/temp_voice_${Date.now()}.mp3`;
+
+                    // Write to Puter FS
+                    await puter.fs.write(filename, blob);
+
+                    try {
+                        // Transcribe using whisper-1 (best for varied audio formats)
+                        const transcription = await puter.ai.speech2txt(filename, { model: 'whisper-1' });
+
+                        // Delete temp file
+                        await puter.fs.delete(filename).catch(() => { });
+
+                        return transcription;
+                    } catch (transE) {
+                        // Cleanup on error
+                        await puter.fs.delete(filename).catch(() => { });
+                        throw transE;
+                    }
+                } catch (e) {
+                    throw new Error(e.message || JSON.stringify(e));
+                }
+            };
+            // Video Wrapper (Txt2Vid)
+            window.doVideo = async (prompt, model) => {
+                try {
+                    if (!puter?.ai) throw new Error('Puter AI not ready');
+                    const options = {
+                        model: model || 'sora-2', // Use Sora-2 as default per user request
+                        prompt
+                    };
+                    const result = await puter.ai.txt2vid(prompt, options);
+
+                    if (result && (result instanceof HTMLVideoElement || result.tagName === 'VIDEO')) {
+                        return result.src;
+                    }
+                    if (typeof result === 'string') return result;
+                    return result;
+                } catch (e) {
+                    throw new Error(e.message || JSON.stringify(e));
+                }
             };
         });
     }
@@ -275,333 +406,429 @@ class BrowserSession {
         this.status = 'dead';
         this.isReady = false;
         if (this.browser) {
-            console.log(`[Session #${this.id}] Closing browser...`);
+            console.log(`[Session #${this.id}] Killing browser...`);
             await this.browser.close().catch(() => { });
         }
     }
+
     async injectToken(token) {
-        if (!this.page) return false;
+        if (!this.page || !token) return;
         try {
-            console.log(`[Session #${this.id}] Injecting manual token...`);
+            this.token = token; // Synchronize local state
             await this.page.evaluate((t) => {
                 localStorage.setItem('puter.auth.token', t);
                 localStorage.setItem('token', t);
             }, token);
-
-            // Reload to apply
             await this.page.reload({ waitUntil: 'domcontentloaded' });
-            await this.waitForLogin();
-            return true;
-        } catch (e) {
-            console.error(`[Session #${this.id}] Token injection failed:`, e.message);
-            return false;
-        }
+        } catch (e) { }
     }
 }
 
+// =====================
+// Session Pool (Manager)
+// ... (rest of SessionPool)
+
+// 6. Video (New)
+app.post('/api/video/generate', async (req, res) => {
+    try {
+        const { prompt, model } = req.body;
+        console.log(`[Video] Generating: "${prompt}"`);
+
+        // Timeout is tricky here as video takes long. 
+        // We might need to rely on the client setting a long timeout.
+        const result = await safeExecute('Video', async (session) => {
+            return await session.page.evaluate(async (p, m) => window.doVideo(p, m),
+                prompt,
+                model || 'sora-2'
+            );
+        });
+
+        res.json({ url: result });
+
+    } catch (e) {
+        console.error('[Video] Error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// =====================
+// Session Pool (Manager)
+// =====================
+
 class SessionPool {
-    constructor(size = 1) { // REDUCED: 1 browser for 512MB Render free tier
-        this.size = size;
-        this.pool = []; // Queue of Session objects
-        this.counter = 0;
-        this.failedAttempts = 0;
-        this.maxFailedAttempts = 10; // Stop trying after 10 consecutive failures
+    constructor() {
+        this.primary = null;
+        this.standby = null;
+        this.sessionCounter = 0;
+        this.tokenCache = null;
     }
 
     async init() {
-        console.log(`[Pool] Initializing ${this.size} sessions...`);
-        const promises = [];
-        for (let i = 0; i < this.size; i++) {
-            promises.push(this.addSession());
-        }
-        // Wait for at least one to be ready? No, just start them.
-        // But we want to block server start until at least one is ready ideally, 
-        // OR we just let requests wait.
+        console.log('[Pool] Initializing Dual-Browser System...');
+
+        // Start Primary
+        this.primary = await this.createSession('primary');
+
+        // Start Standby (staggered slightly to avoid CPU spike)
+        setTimeout(async () => {
+            this.standby = await this.createSession('standby');
+        }, 5000);
     }
 
-    async addSession() {
-        if (this.failedAttempts >= this.maxFailedAttempts) {
-            console.error('[Pool] Max failed attempts reached. Stopping session creation.');
-            return null;
-        }
+    async createSession(type) {
+        this.sessionCounter++;
+        const s = new BrowserSession(this.sessionCounter, type);
 
-        this.counter++;
-        const s = new BrowserSession(this.counter);
-        this.pool.push(s);
-
-        // Start init in background, but handle error by removing
-        s.init().then(() => {
-            this.failedAttempts = 0; // Reset on success
-        }).catch(e => {
-            console.error(`[Pool] Session #${s.id} failed to init. Removing.`);
-            this.removeSession(s);
-            this.failedAttempts++;
-
-            // Only retry if under limit
-            if (this.failedAttempts < this.maxFailedAttempts) {
-                setTimeout(() => this.addSession(), 10000); // 10s delay between retries
+        // Init with cached token if available
+        s.init(this.tokenCache).then(() => {
+            if (s.token) {
+                console.log(`[Pool] Captured token from Session #${s.id}`);
+                this.updateToken(s.token);
             }
+        }).catch(() => {
+            console.error(`[Pool] Session #${s.id} failed to launch. Retrying...`);
+            // Simple retry logic could be added here
         });
 
         return s;
     }
 
-    removeSession(s) {
-        const idx = this.pool.indexOf(s);
-        if (idx !== -1) {
-            this.pool.splice(idx, 1);
+    updateToken(token) {
+        if (!token || token === this.tokenCache) return;
+        this.tokenCache = token;
+
+        // Sync to other session if alive
+        if (this.primary && this.primary.isReady && this.primary.token !== token) {
+            this.primary.injectToken(token);
         }
-        s.close();
-    }
-
-    async getActiveSession() {
-        // Find first Ready session
-        let s = this.pool.find(s => s.isReady);
-
-        if (!s) {
-            // No ready session? Wait a bit
-            console.warn('[Pool] No active session ready, waiting...');
-            for (let i = 0; i < 10; i++) {
-                await new Promise(r => setTimeout(r, 1000));
-                s = this.pool.find(s => s.isReady);
-                if (s) break;
-            }
-            if (!s) throw new Error('No available sessions ready. Please wait.');
+        if (this.standby && this.standby.isReady && this.standby.token !== token) {
+            this.standby.injectToken(token);
         }
-        return s;
     }
 
-    async rotate(failedSession) {
-        console.warn(`[Pool] 🔄 ROTATING! Removing #${failedSession.id} and switching to backup...`);
+    async getSession() {
+        // Always prefer Primary
+        if (this.primary && this.primary.isReady) return this.primary;
 
-        // Remove the dead one
-        this.removeSession(failedSession);
+        // If Primary dead, check Standby
+        if (this.standby && this.standby.isReady) {
+            console.warn('[Pool] Primary unavailable, promoting Standby...');
+            await this.promoteStandby();
+            return this.primary;
+        }
 
-        // Immediately spawn a new backup
-        this.addSession();
-
-        // The next request will automatically pick up the next ready session in the pool
-        // We assume the backup (#2) is already ready or close to it.
-        const next = this.pool.find(s => s.isReady);
-        if (next) console.log(`[Pool] Switched to Session #${next.id} ✅`);
-        else console.warn(`[Pool] Backup session not ready yet! ⚠️`);
+        throw new Error('No active sessions available. System is initializing.');
     }
-    async injectToken(token) {
-        console.log('[Pool] Injecting token into all sessions...');
-        const results = await Promise.all(this.pool.map(s => s.injectToken(token)));
-        return results.every(r => r === true);
+
+    async promoteStandby() {
+        // Move Standby to Primary
+        const oldPrimary = this.primary;
+        this.primary = this.standby;
+        this.standby = null;
+        this.primary.type = 'primary';
+
+        // Kill old Primary -> RETIRE instead of close
+        if (oldPrimary) {
+            // oldPrimary.close(); 
+            oldPrimary.retire();
+        }
+
+        // Create new Standby
+        console.log('[Pool] Spawning new Standby...');
+        this.standby = await this.createSession('standby');
+    }
+
+    async forceRotate() {
+        console.warn('[Pool] ⚠️ FORCE ROTATION TRIGGERED (Limit/Error) ⚠️');
+        // This is called when Primary fails/hits limit
+        if (this.standby && this.standby.isReady) {
+            await this.promoteStandby();
+            return this.primary;
+        } else {
+            console.error('[Pool] Cannot rotate! Standby not ready. Restarting Primary...');
+            if (this.primary) await this.primary.close(); // Hard restart if no standby
+            this.primary = await this.createSession('primary');
+            return this.primary;
+        }
     }
 }
 
-// Global Pool - 1 browser for 512MB free tier
-const sessionPool = new SessionPool(1);
+const pool = new SessionPool();
 
 // =====================
-// Endpoints
+// Helper: Execute with Failover
 // =====================
 
-app.get('/api/health', (req, res) => {
-    const readyCount = sessionPool.pool.filter(s => s.isReady).length;
-    res.json({ status: 'ok', readySessions: readyCount, totalSessions: sessionPool.pool.length });
-});
-
-// Debug endpoint - shows live browser screenshot
-app.get('/debug', async (req, res) => {
+async function safeExecute(actionName, fn) {
+    let session = null;
     try {
-        const session = sessionPool.pool.find(s => s.page);
-        if (!session || !session.page) {
-            return res.send('<h1>No browser session available</h1>');
+        session = await pool.getSession();
+
+        // LOCK SESSION
+        session.activeRequests++;
+
+        // Ensure injection before run
+        await session.injectHelpers();
+        const result = await fn(session);
+
+        // UNLOCK SESSION
+        session.activeRequests--;
+        if (session.status === 'retiring' && session.activeRequests <= 0) {
+            session.close();
         }
 
-        // Get token info
-        const tokenInfo = await session.page.evaluate(() => {
-            let token = null;
-            try {
-                if (typeof puter !== 'undefined' && puter.authToken) token = puter.authToken;
-                if (!token) token = localStorage.getItem('puter.auth.token');
-            } catch (e) { }
-            return {
-                hasToken: !!token,
-                tokenFull: token || 'NO TOKEN',
-                puterExists: typeof puter !== 'undefined',
-                puterAiExists: typeof puter !== 'undefined' && !!puter.ai
-            };
-        }).catch(() => ({ hasToken: false, tokenFull: 'ERROR', puterExists: false, puterAiExists: false }));
+        return result;
 
-        // Take screenshot
-        const screenshot = await session.page.screenshot({ encoding: 'base64', fullPage: false });
-
-        res.send(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Debug - Browser View</title>
-                <meta http-equiv="refresh" content="5">
-                <style>
-                    body { font-family: monospace; background: #1a1a2e; color: #0f0; padding: 20px; }
-                    img { max-width: 100%; border: 2px solid #0f0; margin-top: 10px; }
-                    .info { background: #16213e; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
-                    .token { word-break: break-all; background: #0d1b2a; padding: 10px; border-radius: 4px; }
-                    h1 { color: #00ff88; }
-                    .status { color: ${session.isReady ? '#0f0' : '#f00'}; }
-                </style>
-            </head>
-            <body>
-                <h1>🔍 Debug View (Auto-refresh: 5s)</h1>
-                <div class="info">
-                    <p><b>Session ID:</b> #${session.id}</p>
-                    <p><b>Status:</b> <span class="status">${session.isReady ? 'READY ✅' : 'NOT READY ❌'}</span></p>
-                    <p><b>puter object:</b> ${tokenInfo.puterExists ? 'EXISTS' : 'MISSING'}</p>
-                    <p><b>puter.ai:</b> ${tokenInfo.puterAiExists ? 'EXISTS' : 'MISSING'}</p>
-                    <p><b>Has Token:</b> ${tokenInfo.hasToken ? 'YES ✅' : 'NO ❌'}</p>
-                    <p><b>puter.authToken:</b></p>
-                    <div class="token">${tokenInfo.tokenFull}</div>
-                </div>
-                <h2>📷 Live Screenshot:</h2>
-                <img src="data:image/png;base64,${screenshot}" alt="Browser Screenshot">
-            </body>
-            </html>
-        `);
     } catch (e) {
-        res.status(500).send('<h1>Error: ' + e.message + '</h1>');
-    }
-});
+        // UNLOCK ON ERROR
+        if (session) {
+            session.activeRequests--;
+            if (session.status === 'retiring' && session.activeRequests <= 0) {
+                session.close();
+            }
+        }
 
-async function executeInSession(actionName, actionFn) {
-    // Get Session
-    const session = await sessionPool.getActiveSession();
-
-    try {
-        // Ensure helpers are injected just in case
-        await session.injectHelpers();
-
-        // Run
-        return await actionFn(session);
-    } catch (e) {
         const errStr = e.toString().toLowerCase();
-        if (errStr.includes('limit') || errStr.includes('quota') || errStr.includes('429')) {
-            console.warn(`[${actionName}] HIT LIMIT on Session #${session.id}!`);
+        // If limit reached or generic browser error
+        if (errStr.includes('limit') || errStr.includes('quota') || errStr.includes('429') || errStr.includes('navigat') || errStr.includes('protocol')) {
+            console.warn(`[${actionName}] Failure in Session #${session?.id}: ${e.message}`);
 
-            // Setup rotation
-            sessionPool.rotate(session);
+            // Rotate
+            const newSession = await pool.forceRotate();
+            console.log(`[${actionName}] Retrying with Session #${newSession.id}...`);
 
-            // Retry immediately? 
-            // Yes, get a NEW session (the backup) and retry
-            console.log(`[${actionName}] Retrying with backup session...`);
-            const newSession = await sessionPool.getActiveSession();
-            await newSession.injectHelpers();
-            return await actionFn(newSession);
+            // EXECUTE ON NEW SESSION (Be careful not to infinitely recurse without limits, but safeExecute calls normally bubble up)
+            // Manual retry logic here to properly lock the NEW session
+            newSession.activeRequests++;
+            try {
+                await newSession.injectHelpers();
+                const res = await fn(newSession);
+                newSession.activeRequests--;
+                return res;
+            } catch (retryE) {
+                newSession.activeRequests--;
+                throw retryE;
+            }
         }
         throw e;
     }
 }
+
+// =====================
+// API Endpoints
+// =====================
+
+// 1. Chat
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { prompt, model, messages, system } = req.body;
+        // ... (Logic to construct input similar to before)
+        let input = messages || prompt;
+        if (!input && !messages) return res.status(400).json({ error: 'No input provided' });
+
+        // Normalize input for chat
+        // If messages provided, use them. If system provided, prepend.
+        // Simple normalization:
+        /*
+           We rely on Puter's chat handling which can take string or message array.
+        */
+
+        const result = await safeExecute('Chat', async (session) => {
+            return await session.page.evaluate(async (p, m) => window.doChat(p, m), input, model || 'gemini-2.0-flash');
+        });
+
+        // Normalize output (Robust Parsing)
+        let text = '';
+        const normalizeResponse = (res) => {
+            if (!res) return '';
+            if (typeof res === 'string') return res;
+
+            // Helper to extract text from content (string or array)
+            const extractContent = (content) => {
+                if (typeof content === 'string') return content;
+                if (Array.isArray(content)) {
+                    return content.map(c => c.text || JSON.stringify(c)).join('');
+                }
+                return JSON.stringify(content);
+            };
+
+            // OpenAI / Puter Standard / Claude (wrapped)
+            if (res.choices && res.choices[0] && res.choices[0].message) {
+                return extractContent(res.choices[0].message.content);
+            }
+            if (res.message && res.message.content) {
+                return extractContent(res.message.content);
+            }
+
+            // Anthropic direct response
+            if (res.content) {
+                return extractContent(res.content);
+            }
+
+            // Generic Text field
+            if (res.text) return res.text;
+
+            // Fallback
+            return JSON.stringify(res, null, 2);
+        };
+
+        text = normalizeResponse(result);
+
+        res.json({ text, full: result });
+
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 2. Image (Enhanced)
+app.post('/api/image/generate', async (req, res) => {
+    try {
+        const { prompt, model, input_image } = req.body;
+        // model default: 'gemini-2.5-flash-image-preview' (Nano Banana) or 'black-forest-labs/FLUX.1.1-pro'
+
+        console.log(`[Image] Generating: "${prompt}" (Img2Img: ${!!input_image})`);
+
+        const result = await safeExecute('Image', async (session) => {
+            return await session.page.evaluate(async (p, m, i) => window.doImage(p, m, i),
+                prompt,
+                model || 'gemini-2.5-flash-image-preview',
+                input_image // Optional Base64
+            );
+        });
+
+        res.json(result);
+
+    } catch (e) {
+        console.error('[Image] Error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 3. Search (Perplexity)
+app.post('/api/tool/search', async (req, res) => {
+    try {
+        const { prompt } = req.body;
+        const result = await safeExecute('Search', async (session) => {
+            return await session.page.evaluate(async (p) => window.doSearch(p), prompt);
+        });
+        res.json({ result });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 4. Text-to-Speech (TTS)
+app.post('/api/tool/tts', async (req, res) => {
+    try {
+        const { text, voice } = req.body;
+        const audioData = await safeExecute('TTS', async (session) => {
+            return await session.page.evaluate(async (t, v) => window.doTTS(t, v), text, voice);
+        });
+        res.json({ audio: audioData }); // Returns Base64 data URI typically
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 5. Speech-to-Text (STT)
+app.post('/api/tool/stt', async (req, res) => {
+    try {
+        const { audio } = req.body; // Expecting Base64 string or URL
+        if (!audio) return res.status(400).json({ error: 'Audio data/url required' });
+
+        const result = await safeExecute('STT', async (session) => {
+            return await session.page.evaluate(async (a) => window.doSTT(a), audio);
+        });
+        res.json({ text: result.text || result });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Health & Debug
+app.get('/api/health', (req, res) => {
+    res.json({
+        primary: pool.primary?.isReady,
+        standby: pool.standby?.isReady,
+        browser_count: (pool.primary ? 1 : 0) + (pool.standby ? 1 : 0)
+    });
+});
+
+app.get('/debug', async (req, res) => {
+    // Generate simple debug view of both browsers
+    let html = '<html><body style="background:#222;color:#0f0;font-family:monospace;"><h1>Dual-Browser Status</h1>';
+
+    const getSessInfo = async (s, name) => {
+        if (!s) return `<h2>${name}: NULL</h2>`;
+        let shot = '';
+        try {
+            if (s.page) shot = await s.page.screenshot({ encoding: 'base64', type: 'webp', quality: 20 });
+        } catch (e) { }
+
+        return `
+            <div style="border:1px solid #555; padding:10px; margin:10px;">
+                <h2>${name} (ID: ${s.id})</h2>
+                <p>Status: ${s.status} | Ready: ${s.isReady}</p>
+                <p>Created: ${new Date(s.createdAt).toISOString()}</p>
+                ${shot ? `<img src="data:image/webp;base64,${shot}" style="max-width:400px;border:1px solid #fff;">` : '<p>No Screenshot</p>'}
+            </div>
+        `;
+    };
+
+    html += await getSessInfo(pool.primary, 'PRIMARY');
+    html += await getSessInfo(pool.standby, 'STANDBY');
+    html += '</body></html>';
+    res.send(html);
+});
+
+// =====================
+// Missing Endpoints & Listen Logic
+// =====================
 
 app.post('/api/auth/token', async (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: 'Token required' });
 
     try {
-        const success = await sessionPool.injectToken(token);
-        res.json({ success });
+        // Update pool cache which syncs to all sessions
+        pool.updateToken(token);
+        res.json({ success: true });
     } catch (e) {
         console.error('[Auth] Error:', e);
         res.status(500).json({ error: e.message });
     }
 });
 
-// Chat Management (Simple Store)
 app.get('/api/chats', (req, res) => res.json(chatStore.getAllChats()));
 app.post('/api/chats', (req, res) => {
     res.status(201).json(chatStore.createChat(req.body.title, req.body.model));
 });
 
-app.post('/api/chat', async (req, res) => {
-    try {
-        let { prompt, model, messages, system } = req.body;
 
-        // Construct messages logic
-        if (!messages) {
-            messages = [];
-            if (system) messages.push({ role: 'system', content: system });
-            if (prompt) messages.push({ role: 'user', content: prompt });
-        } else {
-            if (system && messages.length > 0 && messages[0].role !== 'system') {
-                messages.unshift({ role: 'system', content: system });
-            }
-        }
-        const input = messages.length > 0 ? messages : prompt;
+// Start (Only if running directly)
+if (require.main === module) {
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Server v2 running on ${PORT}`);
+        pool.init();
+        startKeepAlive();
+    });
+}
 
-        const result = await executeInSession('Chat', async (session) => {
-            return await session.page.evaluate(async (i, m) => window.doChat(i, m), input, model || 'gemini-2.0-flash');
+// Exports for server.js compatibility
+module.exports = {
+    // If server.js wants to mount us:
+    app,
+    start: () => {
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`Server v2 running on ${PORT}`);
+            pool.init();
+            startKeepAlive();
         });
-
-        // Process result
-        let text = '';
-        if (typeof result === 'string') text = result;
-        else if (result?.message?.content) text = Array.isArray(result.message.content) ? result.message.content.map(c => c.text).join('') : result.message.content;
-        else if (result?.text) text = result.text;
-        else text = JSON.stringify(result);
-
-        res.json({ text, full: result });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post('/api/image/generate', async (req, res) => {
-    try {
-        const { prompt, model } = req.body;
-        console.log(`[Image] Generating: "${prompt}" with model: ${model}`);
-        const result = await executeInSession('Image', async (session) => {
-            return await session.page.evaluate(async (p, m) => {
-                try {
-                    return await window.doImage(p, m);
-                } catch (err) {
-                    return { error: err.message, stack: err.stack };
-                }
-            }, prompt, model || 'black-forest-labs/FLUX.1.1-pro');
-        });
-
-        // Check if result is valid
-        if (result && (result.url || (result.result && result.result !== 'Unknown'))) {
-            console.log('[Image] Success (Puter):', JSON.stringify(result));
-            res.json(result);
-            return;
-        }
-
-        console.warn('[Image] Puter failed or returned empty. Falling back to Pollinations...');
-
-        // Fallback: Pollinations.ai
-        // URL format: https://image.pollinations.ai/prompt/{prompt}?model={model}&nologo=true
-        const safePrompt = encodeURIComponent(prompt);
-        // Map common models to Pollinations friendly names if needed
-        let pollModel = 'flux'; // Default to flux
-        if (model.includes('flux')) pollModel = 'flux';
-        else if (model.includes('gpt')) pollModel = 'gpt-image-1.5';
-        else if (model.includes('dalle')) pollModel = 'dall-e-3';
-
-        const pollUrl = `https://image.pollinations.ai/prompt/${safePrompt}?model=${pollModel}&nologo=true`;
-        console.log(`[Image] Fallback URL: ${pollUrl}`);
-
-        res.json({
-            url: pollUrl,
-            type: 'url_fallback',
-            source: 'pollinations'
-        });
-
-    } catch (e) {
-        console.error('[Image] API Error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// Bind
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
-
-    // Start Pool
-    sessionPool.init();
-
-    // KeepAlive
-    // ...
-});
+    },
+    // Keep old controller interface just in case
+    init: () => { pool.init(); },
+    getStatus: () => ({ isReady: pool.primary?.isReady, isLoggedIn: !!pool.primary?.token }),
+    injectToken: async (t) => pool.updateToken(t),
+    chat: async (input, model) => { /* routed via app */ }
+};
