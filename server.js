@@ -110,7 +110,35 @@ class BrowserSession {
         for (let i = 0; i < 40; i++) { // 80 seconds max
             await new Promise(r => setTimeout(r, 2000));
 
-            // 1. Clicker Logic
+            // 1. Try to click Cloudflare Turnstile captcha checkbox
+            try {
+                // Cloudflare uses an iframe - try to find and click inside it
+                const frames = this.page.frames();
+                for (const frame of frames) {
+                    const url = frame.url();
+                    if (url.includes('challenges.cloudflare.com') || url.includes('turnstile')) {
+                        console.log(`[Session #${this.id}] Found Cloudflare captcha frame!`);
+                        // Try clicking the checkbox inside the iframe
+                        await frame.click('input[type="checkbox"]').catch(() => { });
+                        await frame.click('.ctp-checkbox-container').catch(() => { });
+                        await frame.click('[class*="checkbox"]').catch(() => { });
+                        // Also try clicking anywhere in the center of the frame
+                        await frame.evaluate(() => {
+                            const box = document.querySelector('.ctp-checkbox-label, [class*="checkbox"], input');
+                            if (box) box.click();
+                        }).catch(() => { });
+                    }
+                }
+
+                // Also try clicking directly on the page (sometimes it's not in iframe)
+                await this.page.evaluate(() => {
+                    // Look for Cloudflare checkbox on main page
+                    const cfCheckbox = document.querySelector('[class*="cf-turnstile"] input, .cf-turnstile input, iframe[src*="turnstile"]');
+                    if (cfCheckbox) cfCheckbox.click();
+                });
+            } catch (e) { }
+
+            // 2. Click "Get Started" button
             try {
                 await this.page.evaluate(() => {
                     const buttons = Array.from(document.querySelectorAll('button, a'));
