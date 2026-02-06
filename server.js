@@ -158,46 +158,17 @@ class BrowserSession {
         }
 
         if (loggedIn) {
-            // Extract and log token info - scan ALL localStorage for token
+            // Extract token directly from puter object
             const tokenInfo = await this.page.evaluate(() => {
-                let foundToken = null;
-                let foundKey = null;
-
-                // Scan all localStorage keys for anything that looks like a token
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    const value = localStorage.getItem(key);
-                    if (value && value.startsWith('eyJ')) { // JWT tokens start with eyJ
-                        foundToken = value;
-                        foundKey = key;
-                        break;
-                    }
-                }
-
-                // Also try to get user info
-                let username = 'Guest';
-                try {
-                    const userJson = localStorage.getItem('puter.auth.user') || localStorage.getItem('user');
-                    if (userJson) {
-                        const user = JSON.parse(userJson);
-                        username = user.username || user.name || 'Guest';
-                    }
-                } catch (e) { }
-
+                const token = (typeof puter !== 'undefined') ? puter.authToken : null;
                 return {
-                    hasToken: !!foundToken,
-                    tokenKey: foundKey,
-                    tokenPreview: foundToken ? foundToken.substring(0, 30) + '...' : null,
-                    user: username,
-                    allKeys: Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
+                    hasToken: !!token,
+                    tokenPreview: token ? token.substring(0, 40) + '...' : null
                 };
             });
 
             console.log(`[Session #${this.id}] READY! ✅`);
-            console.log(`[Session #${this.id}] User: ${tokenInfo.user}`);
-            console.log(`[Session #${this.id}] Token Key: ${tokenInfo.tokenKey || 'NOT FOUND IN LOCALSTORAGE'}`);
-            console.log(`[Session #${this.id}] Token: ${tokenInfo.tokenPreview || 'NONE'}`);
-            console.log(`[Session #${this.id}] All Keys: ${tokenInfo.allKeys.join(', ')}`);
+            console.log(`[Session #${this.id}] 🔑 puter.authToken: ${tokenInfo.tokenPreview || 'NONE'}`);
 
             this.isReady = true;
             this.status = 'ready';
