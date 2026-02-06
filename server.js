@@ -76,9 +76,14 @@ class BrowserSession {
             this.browser = await puppeteer.launch({
                 headless: isProduction ? 'new' : false,
                 defaultViewport: { width: 1920, height: 1080 },
-                dumpio: true, // Show browser console logs in terminal
+                dumpio: false, // SILENCE! No more Chrome stderr spam.
                 executablePath,
                 ignoreDefaultArgs: ['--enable-automation'],
+                env: {
+                    ...process.env,
+                    // Silence DBus errors
+                    DBUS_SESSION_BUS_ADDRESS: '/dev/null'
+                },
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
@@ -91,13 +96,29 @@ class BrowserSession {
                     '--disable-software-rasterizer',
                     '--enable-unsafe-swiftshader',
                     '--no-first-run',
-                    '--no-zygote',
-                    '--disable-extensions'
+                    '--disable-extensions',
+                    // Disable Google Features (GCM, Sync, etc)
+                    '--disable-background-networking',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--disable-default-apps',
+                    '--no-pings',
+                    '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,InterestFeedContentSuggestions',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-component-extensions-with-background-pages',
+                    '--disable-dbus',
+                    '--disable-ipc-flooding-protection'
                 ]
             });
 
             const pages = await this.browser.pages();
             this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
+
+            // Custom Logger (Cleaner than dumpio)
+            this.page.on('console', msg => {
+                const text = msg.text();
+                if (text.includes('ANTIGRAVITY')) console.log(`[Browser #${this.id}] ${text}`);
+            });
 
             console.log(`[Session #${this.id}] Navigating to puter.com...`);
             await this.page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(e => console.log(`[Session #${this.id}] Nav warning:`, e.message));
@@ -123,15 +144,22 @@ class BrowserSession {
                 const clicked = await this.page.evaluate(() => {
                     const buttons = Array.from(document.querySelectorAll('button, a'));
                     // Log potential candidates
-                    const candidates = buttons.filter(b => b.innerText.match(/Get Started|Start|Guest|Try/i)).map(b => b.innerText);
+                    const candidates = buttons.filter(b => b.innerText.match(/Get Started|Start|Guest|Try|Create/i)).map(b => b.innerText);
                     if (candidates.length > 0) console.log('ANTIGRAVITY: Found buttons:', candidates);
 
-                    const startBtn = buttons.find(b =>
-                        b.innerText.match(/Get Started|Start|Guest|Try/i) && b.offsetParent !== null
-                    );
-                    if (startBtn) {
-                        startBtn.click();
-                        return startBtn.innerText;
+                    // Priority 1: "Get Started" or "Guest" (Standard)
+                    let target = buttons.find(b => b.innerText.match(/Get Started|Guest|Try Now/i) && b.offsetParent !== null);
+
+                    // Priority 2: "Create Free Account" (Render / Login Page)
+                    if (!target) {
+                        target = buttons.find(b => b.innerText.match(/Create Free Account/i) && b.offsetParent !== null);
+                    }
+
+                    // Priority 3: "Log In" ? No, stick to guest/free creation paths that lead to guest later
+
+                    if (target) {
+                        target.click();
+                        return target.innerText;
                     }
                     return null;
                 });
