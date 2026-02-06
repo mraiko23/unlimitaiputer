@@ -4,12 +4,10 @@ services:
     runtime: node
     region: frankfurt
     plan: free
-    buildCommand: ./render-build.sh
+    buildCommand: npm install && npx puppeteer-real-browser-install
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PUPPETEER_CACHE_DIR
-        value: /opt/render/project/src/.cache/puppeteer
-      - key: PUPPETEER_EXECUTABLE_PATH
-        value: /opt/render/project/src/.cache/puppeteer/chrome/linux-145.0.7632.46/chrome-linux64/chrome
+      - key: DISPLAY
+        value: ":99"

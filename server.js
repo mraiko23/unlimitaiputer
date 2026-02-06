@@ -1,14 +1,13 @@
 /**
  * Puter AI API Server
- * Strategy: Zero-Downtime Session Pool
- * - Maintains 2 concurrent browser sessions (Active + Backup).
- * - On Limit (429/Quota): Instantly switches to Backup, kills Old, spawns New Backup.
+ * Strategy: Zero-Downtime Session Pool with Cloudflare Bypass
+ * Uses puppeteer-real-browser for automatic Turnstile CAPTCHA solving
  */
 
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const puppeteer = require('puppeteer-core');
+const { connect } = require('puppeteer-real-browser');
 const fs = require('fs');
 const chatStore = require('./chat-store');
 
@@ -19,8 +18,9 @@ const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
 // Keep-alive ping
-const PING_INTERVAL = 90 * 1000; // 90 seconds (1.5 minutes)
+const PING_INTERVAL = 90 * 1000;
 function startKeepAlive() {
     setInterval(() => {
         try {
@@ -41,58 +41,43 @@ class BrowserSession {
         this.browser = null;
         this.page = null;
         this.isReady = false;
-        this.status = 'initializing'; // initializing, ready, dead
+        this.status = 'initializing';
     }
 
     async init() {
-        console.log(`[Session #${this.id}] Launching...`);
+        console.log(`[Session #${this.id}] Launching with puppeteer-real-browser...`);
         try {
-            let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-            if (!executablePath || !fs.existsSync(executablePath)) {
-                const localPaths = [
-                    // Windows
-                    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-                    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-                    // Linux (Render, Ubuntu, etc)
-                    '/usr/bin/google-chrome',
-                    '/usr/bin/google-chrome-stable',
-                    '/usr/bin/chromium',
-                    '/usr/bin/chromium-browser',
-                    // macOS
-                    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-                ];
-                for (const p of localPaths) {
-                    if (fs.existsSync(p)) { executablePath = p; break; }
-                }
-            }
-
-            if (!executablePath) {
-                throw new Error('Chrome not found! Set PUPPETEER_EXECUTABLE_PATH env var.');
-            }
-
-            // Use headless on Render (production)
             const isProduction = process.env.NODE_ENV === 'production';
 
-            this.browser = await puppeteer.launch({
-                headless: isProduction ? 'new' : false, // Headless on Render, Visible locally
-                defaultViewport: null,
-                executablePath,
-                ignoreDefaultArgs: ['--enable-automation'],
+            // Use puppeteer-real-browser with Turnstile auto-solve
+            const response = await connect({
+                headless: isProduction ? 'auto' : false,
+                turnstile: true, // AUTO-SOLVE Cloudflare Turnstile!
+                connectOption: {
+                    defaultViewport: { width: 1280, height: 720 }
+                },
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--start-maximized',
-                    '--incognito',
-                    '--disable-blink-features=AutomationControlled'
-                ]
+                    '--incognito'
+                ],
+                customConfig: {},
+                skipTarget: [],
+                fingerprint: true,
+                turnstileOptimization: true
             });
 
-            const pages = await this.browser.pages();
-            this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
+            this.browser = response.browser;
+            this.page = response.page;
 
+            console.log(`[Session #${this.id}] Browser launched! Turnstile auto-solve enabled.`);
             console.log(`[Session #${this.id}] Navigating to puter.com...`);
-            await this.page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(e => console.log(`[Session #${this.id}] Nav warning:`, e.message));
+
+            await this.page.goto('https://puter.com', {
+                waitUntil: 'domcontentloaded',
+                timeout: 120000
+            }).catch(e => console.log(`[Session #${this.id}] Nav warning:`, e.message));
 
             await this.waitForLogin();
 
@@ -104,49 +89,36 @@ class BrowserSession {
     }
 
     async waitForLogin() {
-        console.log(`[Session #${this.id}] Waiting for Guest Login...`);
+        console.log(`[Session #${this.id}] Waiting for Guest Login (Turnstile auto-solve enabled)...`);
         let loggedIn = false;
 
-        for (let i = 0; i < 40; i++) { // 80 seconds max
+        // puppeteer-real-browser handles Turnstile automatically with turnstile:true
+        // We just need to wait for login and click "Get Started" if needed
+
+        for (let i = 0; i < 90; i++) { // 180 seconds max (3 min for captcha solving)
             await new Promise(r => setTimeout(r, 2000));
 
-            // 1. Try to click Cloudflare Turnstile captcha checkbox
-            try {
-                // Find the Cloudflare iframe on the page and click it with mouse
-                const cfIframe = await this.page.$('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], [class*="cf-turnstile"] iframe');
-                if (cfIframe) {
-                    const box = await cfIframe.boundingBox();
-                    if (box) {
-                        // Click in the left side of the iframe where checkbox usually is
-                        const clickX = box.x + 30; // Checkbox is on the left
-                        const clickY = box.y + box.height / 2;
-                        console.log(`[Session #${this.id}] Clicking Cloudflare captcha at (${clickX}, ${clickY})`);
-
-                        // Move mouse naturally then click
-                        await this.page.mouse.move(clickX, clickY, { steps: 10 });
-                        await new Promise(r => setTimeout(r, 200));
-                        await this.page.mouse.click(clickX, clickY);
-
-                        // Wait a bit for verification
-                        await new Promise(r => setTimeout(r, 2000));
-                    }
+            // Log captcha status for debugging
+            if (i % 10 === 0) {
+                const frames = await this.page.frames();
+                const cfFrame = frames.find(f => f.url().includes('challenges.cloudflare.com'));
+                if (cfFrame) {
+                    console.log(`[Session #${this.id}] � Captcha frame detected, auto-solving in progress...`);
                 }
-            } catch (e) {
-                // Silent fail
             }
 
-            // 2. Click "Get Started" button
+            // Click "Get Started" button if present
             try {
                 await this.page.evaluate(() => {
                     const buttons = Array.from(document.querySelectorAll('button, a'));
                     const startBtn = buttons.find(b =>
-                        b.innerText.match(/Get Started|Start|Guest|Try/i) && b.offsetParent !== null
+                        b.innerText.match(/Get Started|Start|Guest|Try|Continue/i) && b.offsetParent !== null
                     );
                     if (startBtn) startBtn.click();
                 });
             } catch (e) { }
 
-            // 2. Inject & Check
+            // Inject helpers & check login status
             await this.injectHelpers();
 
             // Check Visual & API & TOKEN (all three required!)
