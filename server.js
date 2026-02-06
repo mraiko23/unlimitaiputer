@@ -275,8 +275,8 @@ class SessionPool {
     }
 }
 
-// Global Pool
-const sessionPool = new SessionPool(2);
+// Global Pool - 1 browser for 512MB free tier
+const sessionPool = new SessionPool(1);
 
 // =====================
 // Endpoints
