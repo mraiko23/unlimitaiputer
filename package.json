@@ -4,8 +4,7 @@
     "description": "Puter.js AI API Server with Cloudflare Bypass",
     "main": "server.js",
     "scripts": {
-        "start": "node server.js",
-        "postinstall": "sudo apt-get install xvfb"
+        "start": "node server.js"
     },
     "dependencies": {
         "cors": "^2.8.5",
@@ -16,5 +15,4 @@
     "engines": {
         "node": ">=18.0.0"
     }
-
 }

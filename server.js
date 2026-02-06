@@ -49,10 +49,17 @@ class BrowserSession {
         try {
             const isProduction = process.env.NODE_ENV === 'production';
 
+            // On Render, use the system Chrome if available
+            const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+            if (executablePath) console.log(`[Session #${this.id}] Using custom executable: ${executablePath}`);
+
             // Use puppeteer-real-browser with Turnstile auto-solve
             const response = await connect({
-                headless: isProduction ? 'auto' : false,
+                headless: 'auto', // Auto detects need for Xvfb/Invisible
                 turnstile: true, // AUTO-SOLVE Cloudflare Turnstile!
+                customConfig: {
+                    chromePath: executablePath // Use Render's chrome if set
+                },
                 connectOption: {
                     defaultViewport: { width: 1280, height: 720 }
                 },

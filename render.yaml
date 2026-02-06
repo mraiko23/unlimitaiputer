@@ -4,13 +4,12 @@ services:
     runtime: node
     region: frankfurt
     plan: free
-    buildCommand: npm install && sudo apt-get install xvfb
+    buildCommand: npm install
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DISPLAY
-        value: ":99"
-
-
-
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: "/usr/bin/google-chrome-stable"
