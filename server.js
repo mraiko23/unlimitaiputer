@@ -112,31 +112,28 @@ class BrowserSession {
 
             // 1. Try to click Cloudflare Turnstile captcha checkbox
             try {
-                // Cloudflare uses an iframe - try to find and click inside it
-                const frames = this.page.frames();
-                for (const frame of frames) {
-                    const url = frame.url();
-                    if (url.includes('challenges.cloudflare.com') || url.includes('turnstile')) {
-                        console.log(`[Session #${this.id}] Found Cloudflare captcha frame!`);
-                        // Try clicking the checkbox inside the iframe
-                        await frame.click('input[type="checkbox"]').catch(() => { });
-                        await frame.click('.ctp-checkbox-container').catch(() => { });
-                        await frame.click('[class*="checkbox"]').catch(() => { });
-                        // Also try clicking anywhere in the center of the frame
-                        await frame.evaluate(() => {
-                            const box = document.querySelector('.ctp-checkbox-label, [class*="checkbox"], input');
-                            if (box) box.click();
-                        }).catch(() => { });
+                // Find the Cloudflare iframe on the page and click it with mouse
+                const cfIframe = await this.page.$('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], [class*="cf-turnstile"] iframe');
+                if (cfIframe) {
+                    const box = await cfIframe.boundingBox();
+                    if (box) {
+                        // Click in the left side of the iframe where checkbox usually is
+                        const clickX = box.x + 30; // Checkbox is on the left
+                        const clickY = box.y + box.height / 2;
+                        console.log(`[Session #${this.id}] Clicking Cloudflare captcha at (${clickX}, ${clickY})`);
+
+                        // Move mouse naturally then click
+                        await this.page.mouse.move(clickX, clickY, { steps: 10 });
+                        await new Promise(r => setTimeout(r, 200));
+                        await this.page.mouse.click(clickX, clickY);
+
+                        // Wait a bit for verification
+                        await new Promise(r => setTimeout(r, 2000));
                     }
                 }
-
-                // Also try clicking directly on the page (sometimes it's not in iframe)
-                await this.page.evaluate(() => {
-                    // Look for Cloudflare checkbox on main page
-                    const cfCheckbox = document.querySelector('[class*="cf-turnstile"] input, .cf-turnstile input, iframe[src*="turnstile"]');
-                    if (cfCheckbox) cfCheckbox.click();
-                });
-            } catch (e) { }
+            } catch (e) {
+                // Silent fail
+            }
 
             // 2. Click "Get Started" button
             try {
