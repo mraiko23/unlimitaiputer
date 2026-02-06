@@ -74,8 +74,9 @@ class BrowserSession {
             const isProduction = process.env.NODE_ENV === 'production';
 
             this.browser = await puppeteer.launch({
-                headless: isProduction ? 'new' : false, // Headless on Render, Visible locally
+                headless: isProduction ? 'new' : false,
                 defaultViewport: null,
+                dumpio: true, // Show browser console logs in terminal
                 executablePath,
                 ignoreDefaultArgs: ['--enable-automation'],
                 args: [
@@ -90,22 +91,6 @@ class BrowserSession {
 
             const pages = await this.browser.pages();
             this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
-
-            // Intercept network requests to capture Authorization token
-            this.capturedToken = null;
-            await this.page.setRequestInterception(true);
-            this.page.on('request', (request) => {
-                const headers = request.headers();
-                if (headers['authorization'] && headers['authorization'].startsWith('Bearer ')) {
-                    const token = headers['authorization'].replace('Bearer ', '');
-                    // Only save valid JWT tokens (start with eyJ)
-                    if (token && token.startsWith('eyJ') && token.length > 50) {
-                        this.capturedToken = token;
-                        console.log(`[Session #${this.id}] 🔑 TOKEN CAPTURED: ${token.substring(0, 40)}...`);
-                    }
-                }
-                request.continue();
-            });
 
             console.log(`[Session #${this.id}] Navigating to puter.com...`);
             await this.page.goto('https://puter.com', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(e => console.log(`[Session #${this.id}] Nav warning:`, e.message));
@@ -140,17 +125,21 @@ class BrowserSession {
             // 2. Inject & Check
             await this.injectHelpers();
 
-            // Check Visual & API
+            // Check Visual & API & Token
             const status = await this.page.evaluate(() => {
-                const visual = window.checkLogin(); // Visual check
+                const visual = window.checkLogin();
+                // We strictly need the token now
+                const hasToken = (typeof puter !== 'undefined' && (puter.authToken || puter.token));
                 const api = (typeof puter !== 'undefined' && !!puter.ai);
-                return { visual, api };
+                return { visual, api, hasToken };
             });
 
             if (status.visual) {
-                if (status.api) {
+                if (status.api && status.hasToken) {
                     loggedIn = true;
                     break;
+                } else {
+                    console.log(`[Session #${this.id}] Visual OK, waiting for API/Token... (API: ${status.api}, Token: ${status.hasToken})`);
                 }
             }
 
@@ -162,45 +151,35 @@ class BrowserSession {
         }
 
         if (loggedIn) {
-            // Wait for token to be captured from network requests
-            console.log(`[Session #${this.id}] API detected, waiting for token capture...`);
-
-            // Trigger an API call to force token generation
-            try {
-                await this.page.evaluate(() => {
-                    if (typeof puter !== 'undefined' && puter.ai) {
-                        puter.ai.chat('test', { model: 'gemini-2.0-flash' }).catch(() => { });
-                    }
-                });
-            } catch (e) { }
-
-            for (let t = 0; t < 10; t++) { // 10 checks, 10 sec each = 100 sec max
-                if (this.capturedToken) break;
-                console.log(`[Session #${this.id}] Waiting for token... (${t + 1}/10)`);
-                await new Promise(r => setTimeout(r, 10000));
-
-                // Try triggering another API call
-                if (t === 3 || t === 6) {
-                    console.log(`[Session #${this.id}] Triggering API call to force token...`);
-                    try {
-                        await this.page.evaluate(() => {
-                            if (typeof puter !== 'undefined' && puter.ai) {
-                                puter.ai.chat('hello', { model: 'gemini-2.0-flash' }).catch(() => { });
-                            }
-                        });
-                    } catch (e) { }
+            // Extract and log token info
+            const tokenInfo = await this.page.evaluate(() => {
+                // TRY 1: Get directly from Puter object (Best)
+                let token = null;
+                if (typeof puter !== 'undefined') {
+                    token = puter.authToken || puter.token;
                 }
-            }
 
-            if (this.capturedToken) {
-                console.log(`[Session #${this.id}] READY! ✅`);
-                console.log(`[Session #${this.id}] 🔑 Token: ${this.capturedToken.substring(0, 40)}...`);
-                this.isReady = true;
-                this.status = 'ready';
-            } else {
-                console.warn(`[Session #${this.id}] Token not captured after 100s. ⚠️ Restarting...`);
-                throw new Error('Token not captured');
-            }
+                // TRY 2: LocalStorage fallback
+                if (!token) {
+                    token = localStorage.getItem('puter.auth.token') ||
+                        localStorage.getItem('token') ||
+                        localStorage.getItem('puter_token');
+                }
+
+                // Debug log in browser console
+                console.log('ANTIGRAVITY DEBUG: Found Token:', token);
+
+                const user = localStorage.getItem('puter.auth.user');
+                return {
+                    hasToken: !!token,
+                    tokenPreview: token ? token.substring(0, 50) + '...' : null,
+                    user: user ? JSON.parse(user).username : 'Guest'
+                };
+            });
+            console.log(`[Session #${this.id}] READY! ✅`);
+            console.log(`[Session #${this.id}] User: ${tokenInfo.user}, Token: ${tokenInfo.hasToken ? tokenInfo.tokenPreview : 'NONE'}`);
+            this.isReady = true;
+            this.status = 'ready';
         } else {
             console.warn(`[Session #${this.id}] Login Timed Out. ❌`);
             throw new Error('Login Timeout');
@@ -212,9 +191,9 @@ class BrowserSession {
         await this.page.evaluate(() => {
             window.puterReady = true;
             window.checkLogin = () => {
-                if (typeof puter !== 'undefined' && puter.ai) return true;
-                if (localStorage.getItem('puter.auth.token') || localStorage.getItem('token') || localStorage.getItem('puter_token')) return true;
-                if (document.querySelector('.taskbar') || document.querySelector('#desktop')) return true;
+                // Strict check for token
+                if (typeof puter !== 'undefined' && (puter.authToken || puter.token)) return true;
+                if (localStorage.getItem('puter.auth.token') || localStorage.getItem('token')) return true;
                 return false;
             };
             window.doChat = async (prompt, model) => {
