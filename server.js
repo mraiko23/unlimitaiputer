@@ -55,46 +55,16 @@ class BrowserSession {
             let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
 
             if (!executablePath) {
-                // Extended Auto-Discovery (Windows/Mac/Linux)
-                const platform = process.platform;
-                const localPaths = [];
-                if (platform === 'win32') {
-                    localPaths.push(
-                        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-                        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-                        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
-                    );
-                } else if (platform === 'darwin') {
-                    localPaths.push(
-                        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-                        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
-                    );
-                } else {
-                    localPaths.push('/usr/bin/google-chrome', '/usr/bin/google-chrome-stable');
-                    // Try Render Cache (Linux)
-                    const cacheDir = path.join(__dirname, '.cache', 'puppeteer', 'chrome');
-                    if (fs.existsSync(cacheDir)) {
-                        const versions = fs.readdirSync(cacheDir).filter(f => f.startsWith('linux-'));
-                        if (versions.length > 0) {
-                            localPaths.push(path.join(cacheDir, versions[0], 'chrome-linux64', 'chrome'));
-                        }
-                    }
-                }
-
-                for (const p of localPaths) {
-                    if (fs.existsSync(p)) {
-                        executablePath = p;
-                        console.log(`[Session #${this.id}] Found system browser: ${p}`);
-                        break;
-                    }
-                }
-            }
-
-            // Fallback to puppeteer resolution if still not found
-            if (!executablePath) {
                 try {
                     executablePath = puppeteerCore.executablePath();
-                } catch (e) { }
+                    // Ensure absolute path because chrome-launcher fails with relative paths
+                    if (executablePath && !path.isAbsolute(executablePath)) {
+                        executablePath = path.resolve(process.cwd(), executablePath);
+                    }
+                    console.log(`[Session #${this.id}] Resolved Chrome path via puppeteer: ${executablePath}`);
+                } catch (e) {
+                    console.log(`[Session #${this.id}] Could not resolve puppeteer path:`, e.message);
+                }
             }
 
             if (executablePath) {
@@ -126,30 +96,6 @@ class BrowserSession {
 
             this.browser = response.browser;
             this.page = response.page;
-
-            // ENABLE REQUEST INTERCEPTION FOR AUTH INJECTION (Ported from server.js)
-            await this.page.setRequestInterception(true);
-            this.page.on('request', async (req) => {
-                const url = req.url();
-                const type = req.resourceType();
-
-                // 1. Block heavy resources
-                if (['image', 'stylesheet', 'font', 'media'].includes(type) || url.includes('google-analytics')) {
-                    return req.abort();
-                }
-
-                // 2. Inject Authorization Header for API calls
-                if (url.includes('api.puter.com') || url.includes('/api/')) {
-                    const token = await this.page.evaluate(() => localStorage.getItem('token') || localStorage.getItem('puter.auth.token'));
-                    if (token) {
-                        const headers = req.headers();
-                        headers['Authorization'] = `Bearer ${token}`;
-                        return req.continue({ headers });
-                    }
-                }
-
-                req.continue();
-            });
 
             console.log(`[Session #${this.id}] Browser launched! Turnstile auto-solve enabled.`);
             console.log(`[Session #${this.id}] Navigating to puter.com...`);
