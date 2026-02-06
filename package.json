@@ -2,14 +2,14 @@
     "name": "puter-ai-api",
     "version": "2.1.0",
     "description": "Puter.js AI API Server with Cloudflare Bypass",
-    "main": "server.js",
+    "main": "server2.js",
     "scripts": {
-        "start": "node server.js"
+        "start": "node --expose-gc --max-old-space-size=256 server.js"
     },
     "dependencies": {
         "cors": "^2.8.5",
         "express": "^4.18.2",
-        "puppeteer": "^23.0.0",
+        "puppeteer": "^23.11.1",
         "puppeteer-real-browser": "^1.4.4",
         "uuid": "^9.0.0"
     },

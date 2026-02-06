@@ -106,8 +106,7 @@ class BrowserSession {
                     '--disable-breakpad',
                     '--disable-component-update',
                     '--disable-domain-reliability',
-                    // '--disable-extensions', // Kills rebrowser
-                    '--disable-features=AudioServiceOutOfProcess',
+                    '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process', // Aggressive process reduction
                     '--disable-hang-monitor',
                     '--disable-ipc-flooding-protection',
                     '--disable-notifications',
@@ -129,6 +128,7 @@ class BrowserSession {
                     '--password-store=basic',
                     '--use-gl=swiftshader',
                     '--use-mock-keychain',
+                    '--js-flags="--max-old-space-size=128"', // Limit JS heap in Chrome
                     '--window-position=-10000,-10000'
                 ];
 
@@ -461,18 +461,18 @@ class SessionPool {
         this.standby = null;
         this.sessionCounter = 0;
         this.tokenCache = null;
+        this.isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+        this.init();
     }
 
     async init() {
-        console.log('[Pool] Initializing Dual-Browser System...');
-
-        // Start Primary
+        console.log(`[Pool] Initializing... (Mode: ${this.isProduction ? 'Production/Single-Browser' : 'Dual-Browser'})`);
         this.primary = await this.createSession('primary');
 
-        // Start Standby (staggered slightly to avoid CPU spike)
-        setTimeout(async () => {
+        // Disable Standby in production to save ~200MB RAM
+        if (!this.isProduction) {
             this.standby = await this.createSession('standby');
-        }, 5000);
+        }
     }
 
     async createSession(type) {
@@ -533,9 +533,13 @@ class SessionPool {
             oldPrimary.retire();
         }
 
-        // Create new Standby
-        console.log('[Pool] Spawning new Standby...');
-        this.standby = await this.createSession('standby');
+        // Disable Standby in production to save ~200MB RAM
+        if (!this.isProduction) {
+            console.log('[Pool] Spawning new Standby...');
+            this.standby = await this.createSession('standby');
+        } else {
+            console.log('[Pool] Production Mode: Skipping Standby replacement.');
+        }
     }
 
     async forceRotate() {
@@ -575,6 +579,11 @@ async function safeExecute(actionName, fn) {
         session.activeRequests--;
         if (session.status === 'retiring' && session.activeRequests <= 0) {
             session.close();
+        }
+
+        // AGGRESSIVE GC: Clear Node RAM
+        if (global.gc) {
+            global.gc();
         }
 
         return result;
