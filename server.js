@@ -146,7 +146,20 @@ class BrowserSession {
         }
 
         if (loggedIn) {
+            // Extract and log token info
+            const tokenInfo = await this.page.evaluate(() => {
+                const token = localStorage.getItem('puter.auth.token') ||
+                    localStorage.getItem('token') ||
+                    localStorage.getItem('puter_token');
+                const user = localStorage.getItem('puter.auth.user');
+                return {
+                    hasToken: !!token,
+                    tokenPreview: token ? token.substring(0, 20) + '...' : null,
+                    user: user ? JSON.parse(user).username : 'Guest'
+                };
+            });
             console.log(`[Session #${this.id}] READY! ✅`);
+            console.log(`[Session #${this.id}] User: ${tokenInfo.user}, Token: ${tokenInfo.hasToken ? tokenInfo.tokenPreview : 'NONE'}`);
             this.isReady = true;
             this.status = 'ready';
         } else {
@@ -161,17 +174,25 @@ class BrowserSession {
             window.puterReady = true;
             window.checkLogin = () => {
                 if (typeof puter !== 'undefined' && puter.ai) return true;
-                if (localStorage.getItem('token') || localStorage.getItem('puter_token')) return true;
+                if (localStorage.getItem('puter.auth.token') || localStorage.getItem('token') || localStorage.getItem('puter_token')) return true;
                 if (document.querySelector('.taskbar') || document.querySelector('#desktop')) return true;
                 return false;
             };
             window.doChat = async (prompt, model) => {
-                if (typeof puter !== 'undefined' && puter.ai) return await puter.ai.chat(prompt, { model });
-                throw new Error('Puter.js not ready');
+                if (typeof puter === 'undefined' || !puter.ai) {
+                    throw new Error('Puter.ai not available. Token: ' + (localStorage.getItem('puter.auth.token') ? 'exists' : 'missing'));
+                }
+                try {
+                    return await puter.ai.chat(prompt, { model });
+                } catch (e) {
+                    throw new Error('Chat error: ' + e.message);
+                }
             };
             window.doImage = async (prompt, model) => {
-                if (typeof puter !== 'undefined' && puter.ai) return await puter.ai.txt2img(prompt, { model });
-                throw new Error('Puter.js not ready');
+                if (typeof puter === 'undefined' || !puter.ai) {
+                    throw new Error('Puter.ai not available');
+                }
+                return await puter.ai.txt2img(prompt, { model });
             };
         });
     }
