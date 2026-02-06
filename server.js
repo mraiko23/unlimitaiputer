@@ -146,20 +146,47 @@ class BrowserSession {
         }
 
         if (loggedIn) {
-            // Extract and log token info
+            // Extract and log token info - scan ALL localStorage for token
             const tokenInfo = await this.page.evaluate(() => {
-                const token = localStorage.getItem('puter.auth.token') ||
-                    localStorage.getItem('token') ||
-                    localStorage.getItem('puter_token');
-                const user = localStorage.getItem('puter.auth.user');
+                let foundToken = null;
+                let foundKey = null;
+
+                // Scan all localStorage keys for anything that looks like a token
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    const value = localStorage.getItem(key);
+                    if (value && value.startsWith('eyJ')) { // JWT tokens start with eyJ
+                        foundToken = value;
+                        foundKey = key;
+                        break;
+                    }
+                }
+
+                // Also try to get user info
+                let username = 'Guest';
+                try {
+                    const userJson = localStorage.getItem('puter.auth.user') || localStorage.getItem('user');
+                    if (userJson) {
+                        const user = JSON.parse(userJson);
+                        username = user.username || user.name || 'Guest';
+                    }
+                } catch (e) { }
+
                 return {
-                    hasToken: !!token,
-                    tokenPreview: token ? token.substring(0, 20) + '...' : null,
-                    user: user ? JSON.parse(user).username : 'Guest'
+                    hasToken: !!foundToken,
+                    tokenKey: foundKey,
+                    tokenPreview: foundToken ? foundToken.substring(0, 30) + '...' : null,
+                    user: username,
+                    allKeys: Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
                 };
             });
+
             console.log(`[Session #${this.id}] READY! ✅`);
-            console.log(`[Session #${this.id}] User: ${tokenInfo.user}, Token: ${tokenInfo.hasToken ? tokenInfo.tokenPreview : 'NONE'}`);
+            console.log(`[Session #${this.id}] User: ${tokenInfo.user}`);
+            console.log(`[Session #${this.id}] Token Key: ${tokenInfo.tokenKey || 'NOT FOUND IN LOCALSTORAGE'}`);
+            console.log(`[Session #${this.id}] Token: ${tokenInfo.tokenPreview || 'NONE'}`);
+            console.log(`[Session #${this.id}] All Keys: ${tokenInfo.allKeys.join(', ')}`);
+
             this.isReady = true;
             this.status = 'ready';
         } else {
