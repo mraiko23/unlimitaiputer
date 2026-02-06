@@ -57,13 +57,20 @@ class BrowserSession {
             if (!executablePath) {
                 try {
                     executablePath = puppeteerCore.executablePath();
+                    // Ensure absolute path because chrome-launcher fails with relative paths
+                    if (executablePath && !path.isAbsolute(executablePath)) {
+                        executablePath = path.resolve(process.cwd(), executablePath);
+                    }
                     console.log(`[Session #${this.id}] Resolved Chrome path via puppeteer: ${executablePath}`);
                 } catch (e) {
                     console.log(`[Session #${this.id}] Could not resolve puppeteer path:`, e.message);
                 }
             }
 
-            if (executablePath) console.log(`[Session #${this.id}] Using executable: ${executablePath}`);
+            if (executablePath) {
+                console.log(`[Session #${this.id}] Using executable: ${executablePath}`);
+                process.env.CHROME_PATH = executablePath;
+            }
 
             // Use puppeteer-real-browser with Turnstile auto-solve
             const response = await connect({
