@@ -10,6 +10,7 @@ const cors = require('cors');
 const path = require('path');
 const puppeteer = require('puppeteer-core');
 const fs = require('fs');
+const glob = { sync: (p) => { try { return fs.readdirSync(p); } catch (e) { return [] } } }; // Simple fallback or use a loop
 const chatStore = require('./chat-store');
 
 const app = express();
@@ -52,13 +53,28 @@ class BrowserSession {
                 const localPaths = [
                     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
                     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+                    'C:\\LocalAppDir\\Google\\Chrome\\Application\\chrome.exe',
+                    process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe',
                     '/usr/bin/google-chrome',
-                    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+                    '/usr/bin/chromium',
+                    '/usr/bin/chromium-browser',
+                    // Render specific path (from build script cache)
+                    path.join(process.cwd(), '.cache', 'puppeteer', 'chrome', 'linux-119.0.6045.105', 'chrome-linux', 'chrome'),
+                    // Dynamic search in cache if version changes
+                    path.join(process.cwd(), '.cache', 'puppeteer', 'chrome')
                 ];
                 for (const p of localPaths) {
-                    if (fs.existsSync(p)) { executablePath = p; break; }
+                    if (p && fs.existsSync(p)) { executablePath = p; break; }
                 }
             }
+
+            if (!executablePath) {
+                console.error(`[Session #${this.id}] ❌ CRITICAL: Chrome executable not found!`);
+                console.error(`[Session #${this.id}] Tried common paths but all failed. Please set PUPPETEER_EXECUTABLE_PATH.`);
+                throw new Error('Chrome executable not found');
+            }
+
+            console.log(`[Session #${this.id}] Path: ${executablePath}`);
 
             this.browser = await puppeteer.launch({
                 headless: false,
@@ -84,8 +100,8 @@ class BrowserSession {
             await this.waitForLogin();
 
         } catch (e) {
-            console.error(`[Session #${this.id}] FATAL INIT ERROR:`, e.message);
-            this.close();
+            console.error(`[Session #${this.id}] 🛑 FATAL INIT ERROR:`, e.message);
+            await this.close();
             throw e;
         }
     }
@@ -178,6 +194,7 @@ class SessionPool {
         this.size = size;
         this.pool = []; // Queue of Session objects
         this.counter = 0;
+        this.consecutiveFailures = 0;
     }
 
     async init() {
@@ -192,17 +209,29 @@ class SessionPool {
     }
 
     async addSession() {
+        if (this.consecutiveFailures > 5) {
+            console.error('[Pool] 🚨 CIRCUIT BREAKER TRIGGERED: Too many init failures. Stopping retries.');
+            return null;
+        }
+
         this.counter++;
         const s = new BrowserSession(this.counter);
         this.pool.push(s);
 
-        // Start init in background, but handle error by removing
-        s.init().catch(e => {
-            console.error(`[Pool] Session #${s.id} failed to init. Removing.`);
-            this.removeSession(s);
-            // Replace it after a delay
-            setTimeout(() => this.addSession(), 5000);
-        });
+        s.init()
+            .then(() => {
+                this.consecutiveFailures = 0; // Reset on success
+            })
+            .catch(e => {
+                this.consecutiveFailures++;
+                console.error(`[Pool] Session #${s.id} failed to init. Fail count: ${this.consecutiveFailures}`);
+                this.removeSession(s);
+
+                if (this.consecutiveFailures <= 5) {
+                    console.log('[Pool] Retrying in 10s...');
+                    setTimeout(() => this.addSession(), 10000);
+                }
+            });
 
         return s;
     }
