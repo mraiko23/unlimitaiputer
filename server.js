@@ -261,17 +261,38 @@ class BrowserSession {
 
                     const result = await puter.ai.txt2img(prompt, options);
 
-                    // Check for HTMLImageElement by tag name and properties since instanceof might be flaky in Puppeteer context
+                    // Robust extraction for various result formats (DOM, Blob, String, JSON)
                     if (result && (result instanceof HTMLImageElement || result.tagName === 'IMG')) {
                         return result.src;
                     }
-                    if (typeof result === 'string') return result; // URL
+                    if (typeof result === 'string') return result; // URL or Base64
                     if (result instanceof Blob) {
                         return await new Promise(r => {
                             const reader = new FileReader();
                             reader.onload = () => r(reader.result);
                             reader.readAsDataURL(result);
                         });
+                    }
+                    // Handle Gemini/GPT JSON responses
+                    if (result && typeof result === 'object') {
+                        // Priority order for extraction
+                        const possibleValues = [
+                            result.url,
+                            result.src,
+                            result.data,
+                            result.result,
+                            result.image_url,
+                            result.image,
+                            (result.choices && result.choices[0] && result.choices[0].image_url),
+                            (result.choices && result.choices[0] && result.choices[0].url)
+                        ];
+                        const found = possibleValues.find(v => typeof v === 'string' && v.length > 0);
+                        if (found) return found;
+
+                        // Last resort: check if result itself has a 'text' property that looks like a URL
+                        if (result.text && result.text.startsWith('http')) return result.text;
+
+                        throw new Error(`Failed to extract image URL from object: ${JSON.stringify(result)}`);
                     }
                     return result;
                 } catch (e) {
@@ -354,7 +375,7 @@ class BrowserSession {
                 try {
                     if (!puter?.ai) throw new Error('Puter AI not ready');
                     const options = {
-                        model: model || 'sora-2', // Use Sora-2 as default per user request
+                        model: model || 'sora-2', // Reverted to Sora-2 per user request
                         prompt
                     };
                     const result = await puter.ai.txt2vid(prompt, options);
@@ -408,7 +429,7 @@ app.post('/api/video/generate', async (req, res) => {
         const result = await safeExecute('Video', async (session) => {
             return await session.page.evaluate(async (p, m) => window.doVideo(p, m),
                 prompt,
-                model || 'sora-2'
+                model || 'sora-2' // Reverted to Sora-2
             );
         });
 
