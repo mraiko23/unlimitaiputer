@@ -245,8 +245,25 @@ class BrowserSession {
 
             // Chat Wrapper
             window.doChat = async (prompt, model) => {
-                if (!puter?.ai) throw new Error('Puter AI not ready');
-                return await puter.ai.chat(prompt, { model });
+                try {
+                    if (!puter?.ai) return { error: 'Puter AI not ready' };
+                    return await puter.ai.chat(prompt, { model });
+                } catch (e) {
+                    // Create a serializable error report
+                    const report = {
+                        message: e.message || String(e),
+                        name: e.name,
+                        stack: e.stack,
+                        string: e.toString()
+                    };
+                    // Collect all other properties
+                    try {
+                        Object.getOwnPropertyNames(e).forEach(key => {
+                            if (!report[key]) report[key] = e[key];
+                        });
+                    } catch (e2) { }
+                    return { error: report };
+                }
             };
 
             // Image Wrapper (Txt2Img & Img2Img)
@@ -625,23 +642,28 @@ async function safeExecute(actionName, fn) {
 app.post('/api/chat', async (req, res) => {
     try {
         const { prompt, model, messages, system } = req.body;
-        // ... (Logic to construct input similar to before)
         let input = messages || prompt;
         if (!input && !messages) return res.status(400).json({ error: 'No input provided' });
 
-        // Normalize input for chat
-        // If messages provided, use them. If system provided, prepend.
-        // Simple normalization:
-        /*
-           We rely on Puter's chat handling which can take string or message array.
-        */
+        // Logging for debug
+        if (Array.isArray(input)) {
+            console.log(`[Chat] Payload: Array (${input.length} messages) Model: ${model || 'default'}`);
+        } else {
+            console.log(`[Chat] Payload: String (${input.length} chars) Model: ${model || 'default'}`);
+        }
 
         const result = await safeExecute('Chat', async (session) => {
             return await session.page.evaluate(async (p, m) => window.doChat(p, m), input, model || 'gemini-2.0-flash');
         });
 
+        if (result && result.error) {
+            const errDetails = typeof result.error === 'object' ? JSON.stringify(result.error, null, 2) : String(result.error);
+            throw new Error(errDetails);
+        }
+
         // Normalize output (Robust Parsing)
         let text = '';
+        // Normalize output (Robust Parsing)
         const normalizeResponse = (res) => {
             if (!res) return '';
             if (typeof res === 'string') return res;
@@ -650,37 +672,47 @@ app.post('/api/chat', async (req, res) => {
             const extractContent = (content) => {
                 if (typeof content === 'string') return content;
                 if (Array.isArray(content)) {
-                    return content.map(c => c.text || JSON.stringify(c)).join('');
+                    // Try to finding 'text' in any item, or join everything
+                    return content.map(c => {
+                        if (typeof c === 'string') return c;
+                        return c.text || c.content || JSON.stringify(c);
+                    }).join('');
                 }
                 return JSON.stringify(content);
             };
 
-            // OpenAI / Puter Standard / Claude (wrapped)
-            if (res.choices && res.choices[0] && res.choices[0].message) {
-                return extractContent(res.choices[0].message.content);
-            }
-            if (res.message && res.message.content) {
-                return extractContent(res.message.content);
-            }
-
-            // Anthropic direct response
-            if (res.content) {
-                return extractContent(res.content);
+            // Standard message structures
+            if (res.message) {
+                if (res.message.content) return extractContent(res.message.content);
+                if (res.message.text) return res.message.text;
+                if (typeof res.message === 'string') return res.message;
             }
 
-            // Generic Text field
+            // OpenAI / Choices structure
+            if (res.choices && res.choices[0]) {
+                const choice = res.choices[0];
+                if (choice.message) return extractContent(choice.message.content);
+                if (choice.text) return choice.text;
+            }
+
+            // Anthropic direct / Claude specific
+            if (res.content) return extractContent(res.content);
             if (res.text) return res.text;
 
-            // Fallback
-            return JSON.stringify(res, null, 2);
+            // Final fallback
+            return typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res);
         };
 
         text = normalizeResponse(result);
-
         res.json({ text, full: result });
 
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        console.error(`[Chat] Critical Error:`, e);
+        let errMsg = e.message || String(e);
+        if (errMsg === '[object Object]') {
+            try { errMsg = JSON.stringify(e, null, 2); } catch (e3) { errMsg = e.toString(); }
+        }
+        res.status(500).json({ error: errMsg });
     }
 });
 
