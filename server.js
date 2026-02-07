@@ -307,21 +307,18 @@ class BrowserSession {
                 return await puter.ai.chat(prompt, { model: 'sonar-reasoning-pro' });
             };
 
-            // Text-to-Speech Wrapper
-            window.doTTS = async (text, voice) => {
-                try {
-                    if (!puter?.ai) throw new Error('Puter AI not ready');
-                    // Docs say puter.ai.txt2speech(text, options)
-                    const result = await puter.ai.txt2speech(text, {
-                        provider: 'elevenlabs',
-                        voice: voice || '21m00Tcm4TlvDq8ikWAM',
-                        model: 'eleven_multilingual_v2'
-                    });
+            // Text-to-Speech Wrapper with Fallbacks
+            window.doTTS = async (text, voice, model) => {
+                const tryTTS = async (v, m, p) => {
+                    console.log(`[Puter] TTS Attempt: Voice=${v || 'default'}, Model=${m || 'default'}, Provider=${p || 'default'}`);
+                    const options = {};
+                    if (p) options.provider = p;
+                    if (v) options.voice = v;
+                    if (m) options.model = m;
 
-                    if (result && (result instanceof HTMLAudioElement || result.tagName === 'AUDIO')) {
-                        return result.src; // This is usually a Blob URL or Remote URL
-                    }
+                    const result = await puter.ai.txt2speech(text, options);
 
+                    if (result && (result instanceof HTMLAudioElement || result.tagName === 'AUDIO')) return result.src;
                     if (result instanceof Blob) {
                         return await new Promise(r => {
                             const reader = new FileReader();
@@ -329,9 +326,28 @@ class BrowserSession {
                             reader.readAsDataURL(result);
                         });
                     }
-                    return result; // fallback
-                } catch (e) {
-                    throw new Error(e.message || JSON.stringify(e));
+                    return result;
+                };
+
+                try {
+                    // 1. Try ElevenLabs with requested params
+                    return await tryTTS(voice, model || 'eleven_multilingual_v2', 'elevenlabs');
+                } catch (e1) {
+                    console.warn(`[Puter] TTS Attempt 1 Failed: ${e1.message}`);
+                    try {
+                        // 2. Try ElevenLabs Flash (More stable sometimes)
+                        return await tryTTS(voice, 'eleven_flash_v2_5', 'elevenlabs');
+                    } catch (e2) {
+                        console.warn(`[Puter] TTS Attempt 2 Failed: ${e2.message}`);
+                        try {
+                            // 3. Try ElevenLabs Default Rachel
+                            return await tryTTS('21m00Tcm4TlvDq8ikWAM', 'eleven_multilingual_v2', 'elevenlabs');
+                        } catch (e3) {
+                            console.error(`[Puter] All ElevenLabs attempts failed. Final fallback to Puter default...`);
+                            // 4. Final Fallback to Puter Default
+                            return await tryTTS(null, null, null);
+                        }
+                    }
                 }
             };
 
@@ -368,6 +384,33 @@ class BrowserSession {
                     }
                 } catch (e) {
                     throw new Error(e.message || JSON.stringify(e));
+                }
+            };
+
+            // Voice Conversion Wrapper (Speech-to-Speech)
+            window.doS2S = async (audioDataVal, voice) => {
+                const tryS2S = async (v, m) => {
+                    console.log(`[Puter] S2S Attempt: Voice=${v}, Model=${m}`);
+                    const result = await puter.ai.speech2speech(audioDataVal, {
+                        provider: 'elevenlabs',
+                        voice: v || '21m00Tcm4TlvDq8ikWAM',
+                        model: m || 'eleven_multilingual_sts_v2'
+                    });
+                    if (result instanceof Blob) {
+                        return await new Promise(r => {
+                            const reader = new FileReader();
+                            reader.onload = () => r(reader.result);
+                            reader.readAsDataURL(result);
+                        });
+                    }
+                    return result;
+                };
+
+                try {
+                    return await tryS2S(voice, 'eleven_multilingual_sts_v2');
+                } catch (e) {
+                    console.warn(`[Puter] S2S Failed, trying Rachel fallback...`);
+                    return await tryS2S('21m00Tcm4TlvDq8ikWAM', 'eleven_multilingual_sts_v2');
                 }
             };
             // Video Wrapper (Txt2Vid)
@@ -682,12 +725,14 @@ app.post('/api/tool/search', async (req, res) => {
 app.post('/api/tool/tts', async (req, res) => {
     try {
         const { text, voice } = req.body;
+        console.log(`[TTS] Generating voice for: "${text?.substring(0, 30)}..." (Voice: ${voice || 'default'})`);
         const audioData = await safeExecute('TTS', async (session) => {
             return await session.page.evaluate(async (t, v) => window.doTTS(t, v), text, voice);
         });
-        res.json({ audio: audioData }); // Returns Base64 data URI typically
+        res.json({ audio: audioData });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        console.error('[TTS] Error:', e);
+        res.status(500).json({ error: e.message || 'Unknown TTS error' });
     }
 });
 
@@ -703,6 +748,21 @@ app.post('/api/tool/stt', async (req, res) => {
         res.json({ text: result.text || result });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// 5. Speech-to-Speech (S2S)
+app.post('/api/tool/s2s', async (req, res) => {
+    try {
+        const { audio, voice } = req.body;
+        console.log(`[S2S] Converting voice (Voice: ${voice || 'default'})`);
+        const result = await safeExecute('S2S', async (session) => {
+            return await session.page.evaluate(async (a, v) => window.doS2S(a, v), audio, voice);
+        });
+        res.json({ audio: result });
+    } catch (e) {
+        console.error('[S2S] Error:', e);
+        res.status(500).json({ error: e.message || 'Unknown S2S error' });
     }
 });
 
