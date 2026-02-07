@@ -107,7 +107,7 @@ class BrowserSession {
                     '--disable-breakpad',
                     '--disable-component-update',
                     '--disable-domain-reliability',
-                    '--disable-features=AudioServiceOutOfProcess,IsolateOrigins,site-per-process', // Aggressive process reduction
+                    '--disable-features=AudioServiceOutOfProcess',
                     '--disable-hang-monitor',
                     '--disable-ipc-flooding-protection',
                     '--disable-notifications',
@@ -129,7 +129,6 @@ class BrowserSession {
                     '--password-store=basic',
                     '--use-gl=swiftshader',
                     '--use-mock-keychain',
-                    '--js-flags="--max-old-space-size=128"', // Limit JS heap in Chrome
                     '--window-position=-10000,-10000'
                 ];
 
