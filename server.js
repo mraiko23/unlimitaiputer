@@ -301,19 +301,34 @@ class BrowserSession {
                             result.image_url,
                             result.image,
                             (result.choices && result.choices[0] && result.choices[0].image_url),
-                            (result.choices && result.choices[0] && result.choices[0].url)
+                            (result.choices && result.choices[0] && result.choices[0].url),
+                            result.message,
+                            (result.message && result.message.content)
                         ];
-                        const found = possibleValues.find(v => typeof v === 'string' && v.length > 0);
+                        const found = possibleValues.find(v => typeof v === 'string' && v.startsWith('http'));
                         if (found) return found;
 
-                        // Last resort: check if result itself has a 'text' property that looks like a URL
-                        if (result.text && result.text.startsWith('http')) return result.text;
+                        // Deep search for anything that looks like a URL
+                        const findUrl = (obj) => {
+                            for (const k in obj) {
+                                if (typeof obj[k] === 'string' && obj[k].startsWith('http')) return obj[k];
+                                if (typeof obj[k] === 'object' && obj[k] !== null) {
+                                    const res = findUrl(obj[k]);
+                                    if (res) return res;
+                                }
+                            }
+                            return null;
+                        };
+                        const deepFound = findUrl(result);
+                        if (deepFound) return deepFound;
 
-                        throw new Error(`Failed to extract image URL from object: ${JSON.stringify(result)}`);
+                        console.error('[Puter] Image Extraction Failed. Raw Response:', JSON.stringify(result));
+                        throw new Error(`Failed to extract image URL from object. Response: ${JSON.stringify(result).substring(0, 500)}`);
                     }
                     return result;
                 } catch (e) {
-                    throw new Error(e.message || JSON.stringify(e));
+                    console.error('[Puter] doImage Error:', e);
+                    throw new Error(e.message || String(e));
                 }
             };
 
