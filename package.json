@@ -4,7 +4,7 @@
     "description": "Puter.js AI API Server with Cloudflare Bypass",
     "main": "server2.js",
     "scripts": {
-        "start": "node --expose-gc --max-old-space-size=256 server.js"
+        "start": "node server.js"
     },
     "dependencies": {
         "cors": "^2.8.5",
@@ -16,4 +16,5 @@
     "engines": {
         "node": ">=18.0.0"
     }
+
 }
