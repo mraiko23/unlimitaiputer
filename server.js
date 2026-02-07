@@ -303,8 +303,8 @@ class BrowserSession {
             // Search Wrapper (Perplexity)
             window.doSearch = async (prompt) => {
                 if (!puter?.ai) throw new Error('Puter AI not ready');
-                // Using Perplexity Sonar for search
-                return await puter.ai.chat(prompt, { model: 'perplexity/sonar' });
+                // Using Sonar Reasoning Pro for advanced search
+                return await puter.ai.chat(prompt, { model: 'sonar-reasoning-pro' });
             };
 
             // Text-to-Speech Wrapper
