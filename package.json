@@ -2,7 +2,7 @@
     "name": "puter-ai-api",
     "version": "2.1.0",
     "description": "Puter.js AI API Server with Cloudflare Bypass",
-    "main": "server2.js",
+    "main": "server.js",
     "scripts": {
         "start": "node server.js"
     },
@@ -18,3 +18,4 @@
     }
 
 }
+
