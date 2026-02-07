@@ -166,19 +166,23 @@ class BrowserSession {
             // We will rely on launch args for now to be safe.
             /*
             await this.page.setRequestInterception(true);
-            this.page.on('request', (req) => {
-                const type = req.resourceType();
-                if (['image', 'media', 'font', 'stylesheet', 'other'].includes(type)) {
-                    req.abort();
+            this.page.on('request', (request) => {
+                const url = request.url();
+                const type = request.resourceType();
+                // We DON'T block images or styles anymore, as Puter's vision/image modules might need them.
+                // We only block heavy media and analytics.
+                if (['media', 'font'].includes(type) || url.includes('google-analytics') || url.includes('doubleclick') || url.includes('analytics')) {
+                    request.abort();
                 } else {
-                    req.continue();
+                    request.continue();
                 }
             });
             */
             // Alternative: Use CDP to block URLs safely
             const client = await this.page.target().createCDPSession();
+            // Disable aggressive resource blocking to allow Puter's multimodal features to work
             await client.send('Network.setBlockedURLs', {
-                urls: ['*.png', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.woff', '*.woff2', '*.ttf']
+                urls: ['*.woff', '*.woff2', '*.ttf', '*analytics*', '*doubleclick*']
             });
         } catch (e) {
             console.warn(`[Session #${this.id}] Optimization warning: ${e.message}`);
@@ -250,8 +254,12 @@ class BrowserSession {
                     return await puter.ai.chat(prompt, { model });
                 } catch (e) {
                     // Create a serializable error report
+                    let message = e.message || String(e);
+                    if (message === "[object Object]") {
+                        try { message = JSON.stringify(e); } catch (e2) { message = "Complex Error Object"; }
+                    }
                     const report = {
-                        message: e.message || String(e),
+                        message: message,
                         name: e.name,
                         stack: e.stack,
                         string: e.toString()
@@ -270,7 +278,7 @@ class BrowserSession {
             window.doImage = async (prompt, model, inputImage) => {
                 try {
                     if (!puter?.ai) throw new Error('Puter AI not ready');
-                    const options = { model, prompt }; // Add prompt to options for redundancy
+                    const options = { model }; // Clean options to match Puter's signature
 
                     if (inputImage) {
                         options.input_image = inputImage;
@@ -278,8 +286,12 @@ class BrowserSession {
 
                     const result = await puter.ai.txt2img(prompt, options);
 
+                    if (!result) {
+                        throw new Error('Puter txt2img returned no result (null/undefined)');
+                    }
+
                     // Robust extraction for various result formats (DOM, Blob, String, JSON)
-                    if (result && (result instanceof HTMLImageElement || result.tagName === 'IMG')) {
+                    if (result instanceof HTMLImageElement || result.tagName === 'IMG') {
                         return result.src;
                     }
                     if (typeof result === 'string') return result; // URL or Base64
@@ -291,44 +303,34 @@ class BrowserSession {
                         });
                     }
                     // Handle Gemini/GPT JSON responses
-                    if (result && typeof result === 'object') {
+                    if (typeof result === 'object') {
                         // Priority order for extraction
                         const possibleValues = [
-                            result.url,
-                            result.src,
-                            result.data,
-                            result.result,
-                            result.image_url,
-                            result.image,
-                            (result.choices && result.choices[0] && result.choices[0].image_url),
-                            (result.choices && result.choices[0] && result.choices[0].url),
-                            result.message,
-                            (result.message && result.message.content)
+                            result?.url,
+                            result?.src,
+                            result?.data,
+                            result?.result,
+                            result?.image_url,
+                            result?.image,
+                            result?.choices?.[0]?.image_url,
+                            result?.choices?.[0]?.url,
+                            result?.message,
+                            result?.message?.content
                         ];
                         const found = possibleValues.find(v => typeof v === 'string' && v.startsWith('http'));
                         if (found) return found;
 
-                        // Deep search for anything that looks like a URL
-                        const findUrl = (obj) => {
-                            for (const k in obj) {
-                                if (typeof obj[k] === 'string' && obj[k].startsWith('http')) return obj[k];
-                                if (typeof obj[k] === 'object' && obj[k] !== null) {
-                                    const res = findUrl(obj[k]);
-                                    if (res) return res;
-                                }
-                            }
-                            return null;
-                        };
-                        const deepFound = findUrl(result);
-                        if (deepFound) return deepFound;
-
                         console.error('[Puter] Image Extraction Failed. Raw Response:', JSON.stringify(result));
-                        throw new Error(`Failed to extract image URL from object. Response: ${JSON.stringify(result).substring(0, 500)}`);
+                        throw new Error(`Extraction failed. Object keys: ${Object.keys(result).join(', ')}. Raw: ${JSON.stringify(result).substring(0, 500)}`);
                     }
                     return result;
                 } catch (e) {
                     console.error('[Puter] doImage Error:', e);
-                    throw new Error(e.message || String(e));
+                    let message = e.message || String(e);
+                    if (message === "[object Object]") {
+                        try { message = JSON.stringify(e); } catch (e2) { message = "Complex Image Error Object"; }
+                    }
+                    return { error: { message: message, stack: e.stack, name: e.name } };
                 }
             };
 
@@ -747,11 +749,20 @@ app.post('/api/image/generate', async (req, res) => {
             );
         });
 
+        if (result && result.error) {
+            const errDetails = typeof result.error === 'object' ? JSON.stringify(result.error, null, 2) : String(result.error);
+            throw new Error(errDetails);
+        }
+
         res.json(result);
 
     } catch (e) {
         console.error('[Image] Error:', e);
-        res.status(500).json({ error: e.message });
+        let errMsg = e.message || String(e);
+        if (errMsg === '[object Object]') {
+            try { errMsg = JSON.stringify(e, null, 2); } catch (e3) { errMsg = e.toString(); }
+        }
+        res.status(500).json({ error: errMsg });
     }
 });
 
